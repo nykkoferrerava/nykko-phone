@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Pitaka</title>
+  <meta name="description" content="Personal expense, debt and budget tracker">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Pitaka">
+  <meta name="theme-color" content="#f5f5f3" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#111111" media="(prefers-color-scheme: dark)">
+  <meta name="format-detection" content="telephone=no">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <main id="main"></main>
+
+  <nav class="tabbar">
+    <button data-action="tab" data-tab="home"><span>🏠</span>Home</button>
+    <button data-action="tab" data-tab="debts"><span>💳</span>Debts</button>
+    <button class="fab" data-action="add" aria-label="Add entry">＋</button>
+    <button data-action="tab" data-tab="plan"><span>🎯</span>Plan</button>
+    <button data-action="tab" data-tab="reports"><span>📊</span>Reports</button>
+  </nav>
+
+  <div id="sheet" hidden></div>
+  <div id="toast" role="status" hidden></div>
+  <input id="importFile" type="file" accept="application/json,.json" hidden>
+
+  <section id="onboard" class="overlay" hidden>
+    <form data-form="onboard" class="onboard-inner">
+      <div class="logo">₱</div>
+      <h1>Welcome to Pitaka</h1>
+      <p class="meta">Expenses, debts, bills and savings goals in one place. Everything stays on this iPhone.</p>
+      <label class="field"><span>When was your last payday?</span><input type="date" name="payAnchor"><small>You get paid every 2 weeks; budgets follow your pay periods.</small></label>
+      <label class="field"><span>Usual paycheck (optional)</span><div class="money"><span>₱</span><input name="payAmount" inputmode="decimal" placeholder="0"></div></label>
+      <label class="check"><input type="checkbox" name="pin" checked><span>Lock the app with a PIN</span></label>
+      <button class="btn primary block" type="submit">Get started</button>
+    </form>
+  </section>
+
+  <section id="lock" class="overlay" hidden>
+    <div class="lock-inner">
+      <div class="logo">₱</div>
+      <h2 id="lock-title">Enter PIN</h2>
+      <div id="lock-dots" class="dots"></div>
+      <p id="lock-err" class="critical-text"></p>
+      <div class="keypad">
+        <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
+        <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button>
+        <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button>
+        <span></span><button data-k="0">0</button><button data-k="del" aria-label="Delete">⌫</button>
+      </div>
+      <button id="lock-cancel" class="link">Cancel</button>
+      <button id="lock-forgot" class="link">Forgot PIN?</button>
+    </div>
+  </section>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
