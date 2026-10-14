@@ -1,8 +1,30 @@
 // All data lives in this phone's localStorage under one key. Nothing is sent anywhere.
-import { uid, today, addDays, daysBetween, advance, round2, PER_MONTH, parseISO } from './util.js';
+// No DOM access in this file: it runs unchanged under Node for the logic tests.
+import { uid, today, addDays, daysBetween, advance, retreat, round2, PER_MONTH, parseISO, toISO, monthKey, peso, FREQS, DEFAULT_DUE_DAYS } from './util.js';
 
 const KEY = 'pitaka.data';
-const VERSION = 1;
+const VERSION = 2;
+const MAX_AMOUNT = 1e9;
+
+// ---------- errors ----------
+// ValidationError: the message is shown to the user as-is. `field` names the input to highlight.
+export class ValidationError extends Error {
+  constructor(message, field) {
+    super(message);
+    this.name = 'ValidationError';
+    this.field = field;
+  }
+}
+// StoreError: localStorage refused the write. code 'quota' (full) or 'blocked' (private mode / blocked).
+export class StoreError extends Error {
+  constructor(message, code, cause) {
+    super(message);
+    this.name = 'StoreError';
+    this.code = code;
+    if (cause) this.cause = cause;
+  }
+}
+const fail = (message, field) => { throw new ValidationError(message, field); };
 
 export const DEBT_TYPES = {
   card: { label: 'Credit card', icon: '💳' },
@@ -14,17 +36,209 @@ export const DEBT_TYPES = {
 // These have a fixed amount per payment and a set number of payments.
 export const isScheduled = (d) => ['loan', 'installment', 'lending'].includes(d.type);
 
-const DEFAULT_CATEGORIES = [
-  ['Food', '🍜', 0], ['Groceries', '🛒', 0], ['Transport', '🚕', 0], ['Bills & Utilities', '💡', 0],
-  ['Load & Internet', '📶', 0], ['Shopping', '🛍️', 0], ['Health', '💊', 0], ['Fun', '🎉', 0],
-  ['Family', '👨‍👩‍👧', 0], ['Personal care', '💈', 0], ['Subscriptions', '📺', 0], ['Other', '📦', 0],
-].map(([name, emoji, limit]) => ({ id: uid(), name, emoji, limit }));
+const TXN_KINDS = ['expense', 'income', 'debt', 'goal', 'adjust', 'transfer'];
+const ACCOUNT_KINDS = ['cash', 'ewallet', 'bank'];
+const ADJUST_REASONS = ['fee', 'interest', 'penalty', 'correction'];
 
+const DEFAULT_CATEGORIES = [
+  ['Food', '🍜'], ['Groceries', '🛒'], ['Transport', '🚕'], ['Bills & Utilities', '💡'],
+  ['Load & Internet', '📶'], ['Shopping', '🛍️'], ['Health', '💊'], ['Fun', '🎉'],
+  ['Family', '👨‍👩‍👧'], ['Personal care', '💈'], ['Subscriptions', '📺'], ['Other', '📦'],
+];
+
+// ---------- small helpers ----------
+const BAD_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+const ID_RE = /^[\w-]{1,40}$/;
+const isId = (v) => typeof v === 'string' && ID_RE.test(v);
+const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+const list = (v) => (Array.isArray(v) ? v.filter(isObj) : []);
+const isISO = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && toISO(parseISO(v)) === v;
+const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : typeof v === 'number' && Number.isFinite(v) ? String(v) : '');
+const truthy = (v) => v === true || v === 1 || v === '1' || v === 'true';
+const sum = (arr, f) => round2(arr.reduce((s, x) => s + f(x), 0));
+// Own, defined, non-dangerous keys only (so a "__proto__" key in input can never reach Object.assign).
+function defined(input) {
+  const out = {};
+  if (!isObj(input)) return out;
+  for (const k of Object.keys(input)) if (!BAD_KEYS.has(k) && input[k] !== undefined) out[k] = input[k];
+  return out;
+}
+function toNum(v) {
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string' && v.trim() !== '') return Number(v.replace(/[₱,\s]/g, ''));
+  return NaN;
+}
+const absent = (v) => v === undefined || v === null || v === '';
+
+// One rule set, two modes: strict (user input -> ValidationError) and lenient (stored/restored data -> repair).
+function rules(strict) {
+  const bad = (msg, field, fallback) => {
+    if (strict) fail(msg, field);
+    return fallback;
+  };
+  return {
+    bad,
+    number(v, { min = -Infinity, max = Infinity, def = 0, required = false, int = false } = {}, msg, field) {
+      if (absent(v)) return required ? bad(msg, field, def) : def;
+      const n = toNum(v);
+      if (!Number.isFinite(n)) return bad(msg, field, def);
+      if (strict && (n < min || n > max || (int && !Number.isInteger(n)))) return bad(msg, field, def);
+      return int ? Math.trunc(n) : round2(n);
+    },
+    oneOf(v, allowed, def, msg, field) {
+      if (absent(v)) return def;
+      return allowed.includes(v) ? v : bad(msg, field, def);
+    },
+    name(v, def, msg = 'Enter a name', field = 'name') {
+      return str(v, 60) || bad(msg, field, def);
+    },
+    date(v, { required = false } = {}, msg = 'Pick a valid date', field = 'date') {
+      if (absent(v)) return required ? bad(msg, field, null) : null;
+      return isISO(v) ? v : bad(msg, field, null);
+    },
+    dueDays(v) {
+      if (absent(v)) return [...DEFAULT_DUE_DAYS];
+      const ok = Array.isArray(v) && v.length === 2 && v.every((x) => Number.isInteger(toNum(x)) && toNum(x) >= 1 && toNum(x) <= 31) && toNum(v[0]) !== toNum(v[1]);
+      if (!ok) return bad('Pick two different days of the month (1 to 31)', 'dueDays', [...DEFAULT_DUE_DAYS]);
+      return v.map(toNum).sort((a, b) => a - b);
+    },
+  };
+}
+
+// ---------- record shapes (shared by the save functions and the load/restore sanitizer) ----------
+function shapeCategory(r, strict) {
+  const v = rules(strict);
+  return {
+    id: r.id,
+    name: v.name(r.name, 'Category'),
+    emoji: str(r.emoji, 16) || '📦',
+    limit: v.number(r.limit, { min: 0, max: MAX_AMOUNT }, 'Enter a budget amount, or leave it blank', 'limit'),
+  };
+}
+function shapeAccount(r, strict) {
+  const v = rules(strict);
+  return {
+    id: r.id,
+    name: str(r.name, 40) || v.bad('Enter a name for this wallet', 'name', 'Wallet'),
+    kind: ACCOUNT_KINDS.includes(r.kind) ? r.kind : 'cash',
+    opening: v.number(r.opening, { min: -MAX_AMOUNT, max: MAX_AMOUNT }, 'Enter the starting balance', 'opening'),
+    // null = no cut-off: every entry counts (the default Cash wallet until a starting balance is typed).
+    openingDate: v.date(r.openingDate, {}, 'Pick the date of that balance', 'openingDate'),
+  };
+}
+function shapeDebt(r, strict) {
+  const v = rules(strict);
+  const type = v.oneOf(r.type, Object.keys(DEBT_TYPES), strict ? undefined : 'loan', 'Pick what kind of debt this is', 'type') || fail('Pick what kind of debt this is', 'type');
+  const sched = isScheduled({ type });
+  const money = (val, msg, field, o = {}) => v.number(val, { min: 0, max: MAX_AMOUNT, ...o }, msg, field);
+  const d = {
+    id: r.id,
+    type,
+    name: v.name(r.name, 'Debt'),
+    lender: str(r.lender, 60),
+    balance: money(r.balance, 'Enter how much is left to pay', 'balance', { required: true, min: type === 'card' ? -MAX_AMOUNT : 0 }),
+    original: v.number(r.original, {}),
+    paymentAmount: money(r.paymentAmount, sched ? 'Enter the amount of each payment' : 'Enter a valid amount', 'paymentAmount', { required: sched, min: sched ? 0.01 : 0 }),
+    plannedPayment: money(r.plannedPayment, 'Enter a valid amount', 'plannedPayment'),
+    creditLimit: money(r.creditLimit, 'Enter a valid credit limit', 'creditLimit'),
+    frequency: v.oneOf(r.frequency, Object.keys(FREQS), 'monthly', 'Pick how often you pay', 'frequency'),
+    totalPayments: 0,
+    paymentsMade: 0,
+    nextDue: v.date(r.nextDue, {}, 'Pick a valid due date', 'nextDue'),
+    dueDay: null,
+    rate: v.number(r.rate, { min: 0, max: 100 }, 'Enter the interest rate (0 to 100%)', 'rate'),
+    notes: str(r.notes, 500),
+    createdAt: isISO(r.createdAt) ? r.createdAt : today(),
+  };
+  d.totalPayments = v.number(r.totalPayments, { min: sched ? 1 : 0, max: 1000, int: true, required: sched }, 'Enter how many payments in total', 'totalPayments');
+  d.paymentsMade = v.number(r.paymentsMade, { min: 0, max: sched ? d.totalPayments : 1000, int: true }, "Payments made can't be more than the total", 'paymentsMade');
+  const day = toNum(r.dueDay);
+  d.dueDay = Number.isInteger(day) && day >= 1 && day <= 31 ? day : d.nextDue ? parseISO(d.nextDue).getDate() : null;
+  if (d.frequency === 'semimonthly' && type !== 'card') d.dueDays = v.dueDays(r.dueDays);
+  if (!absent(r.minDue)) d.minDue = money(r.minDue, 'Enter a valid minimum due', 'minDue');
+  return d;
+}
+function shapeBill(r, strict) {
+  const v = rules(strict);
+  const b = {
+    id: r.id,
+    name: v.name(r.name, 'Bill'),
+    amount: v.number(r.amount, { min: 0.01, max: MAX_AMOUNT, required: true }, 'Enter the bill amount', 'amount'),
+    frequency: v.oneOf(r.frequency, Object.keys(FREQS), 'monthly', 'Pick how often this bill comes', 'frequency'),
+    nextDue: v.date(r.nextDue, { required: strict }, 'Pick the due date', 'nextDue'),
+    dueDay: null,
+    done: r.done === true,
+  };
+  if (isId(r.categoryId)) b.categoryId = r.categoryId;
+  const day = toNum(r.dueDay);
+  b.dueDay = Number.isInteger(day) && day >= 1 && day <= 31 ? day : b.nextDue ? parseISO(b.nextDue).getDate() : null;
+  if (b.frequency === 'semimonthly') b.dueDays = v.dueDays(r.dueDays);
+  return b;
+}
+function shapeGoal(r, strict) {
+  const v = rules(strict);
+  return {
+    id: r.id,
+    name: v.name(r.name, 'Goal'),
+    emoji: str(r.emoji, 16) || '🎯',
+    target: v.number(r.target, { min: 0.01, max: MAX_AMOUNT, required: true }, 'Enter the amount you want to save', 'target'),
+    saved: v.number(r.saved, { min: 0, max: MAX_AMOUNT }, 'Enter how much is already saved', 'saved'),
+    deadline: v.date(r.deadline, {}, 'Pick a valid date', 'deadline'),
+    createdAt: isISO(r.createdAt) ? r.createdAt : today(),
+  };
+}
+
+function defaultSettings(accountId) {
+  return {
+    onboarded: false, payAnchor: today(), payAmount: 0, pinHash: null, pinSalt: null, lockAfterSec: 60,
+    hideInstallHint: false, lastCategoryId: null, defaultAccountId: accountId,
+    lastBackupAt: null, entriesAtBackup: 0, pinFails: 0, pinLockUntil: 0,
+  };
+}
+const boolOr = (v) => (typeof v === 'boolean' ? v : undefined);
+const numMin0 = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
+const SETTINGS_RULES = {
+  onboarded: boolOr,
+  hideInstallHint: boolOr,
+  payAnchor: (v) => (isISO(v) ? v : undefined),
+  payAmount: numMin0,
+  lockAfterSec: numMin0,
+  pinLockUntil: numMin0,
+  entriesAtBackup: (v) => (Number.isInteger(v) && v >= 0 ? v : undefined),
+  pinFails: (v) => (Number.isInteger(v) && v >= 0 ? v : undefined),
+  pinHash: (v) => (v === null || typeof v === 'string' ? v : undefined),
+  pinSalt: (v) => (v === null || typeof v === 'string' ? v : undefined),
+  lastCategoryId: (v) => (v === null || isId(v) ? v : undefined),
+  defaultAccountId: (v) => (v === null || isId(v) ? v : undefined),
+  lastBackupAt: (v) => (v === null || (typeof v === 'string' && Number.isFinite(Date.parse(v))) ? v : undefined),
+};
+// Known settings are type-checked; other simple values (UI preferences) are kept as they are.
+function cleanSettings(s, base) {
+  const out = { ...base };
+  if (!isObj(s)) return out;
+  for (const k of Object.keys(s)) {
+    if (BAD_KEYS.has(k)) continue;
+    const v = s[k];
+    if (SETTINGS_RULES[k]) {
+      const x = SETTINGS_RULES[k](v);
+      if (x !== undefined) out[k] = x;
+    } else if (v === null || typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v)) || (typeof v === 'string' && v.length <= 500)) {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+function newCashAccount(openingDate = null) {
+  return { id: uid(), name: 'Cash', kind: 'cash', opening: 0, openingDate };
+}
 function blank() {
+  const cash = newCashAccount();
   return {
     version: VERSION,
-    settings: { onboarded: false, payAnchor: today(), payAmount: 0, pinHash: null, pinSalt: null, lockAfterSec: 60 },
-    categories: DEFAULT_CATEGORIES,
+    settings: defaultSettings(cash.id),
+    categories: DEFAULT_CATEGORIES.map(([name, emoji]) => ({ id: uid(), name, emoji, limit: 0 })),
+    accounts: [cash],
     txns: [],
     debts: [],
     bills: [],
@@ -35,37 +249,235 @@ function blank() {
 
 export let db = blank();
 
-export function load() {
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (raw) db = migrate(JSON.parse(raw));
-  } catch (e) {
-    console.error('Could not read saved data', e);
-  }
-  snapshotDebt(false);
-  return db;
-}
-
-function migrate(data) {
-  const base = blank();
-  const out = { ...base, ...data, settings: { ...base.settings, ...(data.settings || {}) } };
-  out.version = VERSION;
-  return out;
+// ---------- saving: every change is all-or-nothing ----------
+let protectRaw = false; // unreadable data could not be copied aside: never write over it
+function storageError(e) {
+  const quota = !!e && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e.code === 22 || e.code === 1014);
+  return quota
+    ? new StoreError("Couldn't save. This phone's storage for Pitaka is full. Export a backup, then try again.", 'quota', e)
+    : new StoreError("Couldn't save. Storage is blocked on this phone (for example in private browsing). Export a backup so nothing is lost.", 'blocked', e);
 }
 
 export function save() {
-  localStorage.setItem(KEY, JSON.stringify(db));
+  if (protectRaw) throw new StoreError("Couldn't save without overwriting data that could not be read. Export it first.", 'blocked');
+  try {
+    localStorage.setItem(KEY, JSON.stringify(db));
+  } catch (e) {
+    throw storageError(e);
+  }
+}
+
+// Runs a change and saves it. If anything throws (a ValidationError or a failed save), memory is put
+// back exactly as it was before the call, then the error is rethrown.
+let depth = 0;
+function tx(fn) {
+  if (depth) return fn();
+  const before = JSON.stringify(db);
+  depth++;
+  try {
+    const out = fn();
+    save();
+    return out;
+  } catch (e) {
+    if (JSON.stringify(db) !== before) db = JSON.parse(before);
+    throw e;
+  } finally {
+    depth--;
+  }
+}
+
+// ---------- load / backup ----------
+export function load() {
+  let raw;
+  try {
+    raw = localStorage.getItem(KEY);
+  } catch (e) {
+    console.error('Storage is blocked', e);
+    db = blank();
+    snap(false);
+    return { ok: false, reason: 'blocked' };
+  }
+  protectRaw = false;
+  if (raw === null || raw === undefined) {
+    db = blank();
+    snap(false);
+    return { ok: true };
+  }
+  let data;
+  try { data = JSON.parse(raw); } catch { data = undefined; }
+  if (!isObj(data)) {
+    console.error('Saved data could not be read; a copy was kept');
+    const rescuedKey = `${KEY}.unreadable-${Date.now()}`;
+    try {
+      localStorage.setItem(rescuedKey, raw);
+    } catch (e) {
+      console.error('Could not keep a copy of the unreadable data', e);
+      protectRaw = true;
+    }
+    db = blank();
+    snap(false);
+    return { ok: false, reason: 'unreadable', rescuedKey: protectRaw ? null : rescuedKey };
+  }
+  db = sanitize(data);
+  snap(false);
+  return { ok: true };
+}
+
+export function exportBackup() {
+  const out = JSON.parse(JSON.stringify(db));
+  for (const k of ['pinHash', 'pinSalt', 'pinFails', 'pinLockUntil']) delete out.settings[k];
+  out.app = 'pitaka';
+  out.exportedAt = new Date().toISOString();
+  return JSON.stringify(out);
+}
+
+export function markBackedUp() {
+  tx(() => {
+    db.settings.lastBackupAt = new Date().toISOString();
+    db.settings.entriesAtBackup = db.txns.length;
+  });
+}
+
+const localDay = (ms) => toISO(new Date(ms));
+export function backupStatus() {
+  const total = db.txns.length + db.debts.length + db.bills.length + db.goals.length;
+  const last = Date.parse(db.settings.lastBackupAt || '');
+  const backed = Number.isFinite(last);
+  const daysSince = backed ? daysBetween(localDay(last), today()) : null;
+  const newEntries = backed ? db.txns.filter((t) => t.createdAt > last).length : total;
+  let age = daysSince;
+  if (!backed) {
+    // Never backed up: count from the first thing entered.
+    const starts = [
+      ...db.txns.map((t) => t.createdAt).filter((x) => x > 0).map(localDay),
+      ...db.debts.map((d) => d.createdAt), ...db.goals.map((g) => g.createdAt),
+    ].filter(isISO).sort();
+    age = starts.length ? daysBetween(starts[0], today()) : 0;
+  }
+  return { due: total > 0 && (age >= 14 || newEntries >= 40), daysSince, newEntries };
 }
 
 export function replaceAll(data) {
-  if (!data || typeof data !== 'object' || !Array.isArray(data.txns)) throw new Error('This is not a valid backup file.');
-  db = migrate(data);
-  save();
+  if (!isObj(data) || !Array.isArray(data.txns)) fail("This isn't a Pitaka backup file.");
+  const next = sanitize(data);
+  // Restoring never brings back a PIN: the usual reason to restore is a forgotten PIN.
+  Object.assign(next.settings, { pinHash: null, pinSalt: null, pinFails: 0, pinLockUntil: 0 });
+  try {
+    localStorage.setItem(KEY, JSON.stringify(next));
+  } catch (e) {
+    throw storageError(e);
+  }
+  protectRaw = false;
+  db = next;
 }
 
 export function resetAll() {
-  localStorage.removeItem(KEY);
+  try {
+    localStorage.removeItem(KEY);
+  } catch (e) {
+    throw storageError(e);
+  }
+  protectRaw = false;
   db = blank();
+}
+
+// Repairs anything stored or restored so a bad record can never brick the app. Also migrates v1 -> v2.
+function sanitize(data) {
+  const base = blank();
+  const fixIds = (arr) => {
+    const seen = new Set();
+    for (const x of arr) {
+      if (!isId(x.id) || seen.has(x.id)) do x.id = uid(); while (seen.has(x.id));
+      seen.add(x.id);
+    }
+    return arr;
+  };
+  const out = {
+    version: VERSION,
+    settings: cleanSettings(data.settings, base.settings),
+    categories: Array.isArray(data.categories) ? fixIds(list(data.categories).map((r) => shapeCategory(r, false))) : base.categories,
+    accounts: fixIds(list(data.accounts).map((r) => shapeAccount(r, false))),
+    txns: [],
+    debts: fixIds(list(data.debts).map((r) => shapeDebt(r, false))),
+    bills: fixIds(list(data.bills).map((r) => shapeBill(r, false))),
+    goals: fixIds(list(data.goals).map((r) => shapeGoal(r, false))),
+    debtHistory: {},
+  };
+  out.txns = fixIds(list(data.txns).map((r) => cleanTxn(r, out)).filter(Boolean));
+
+  // v1 had no wallets: everything that was cash goes into one "Cash" wallet from the first entry on.
+  if (!out.accounts.length) out.accounts.push(newCashAccount(out.txns.map((t) => t.date).sort()[0] || null));
+  const hasAccount = (id) => out.accounts.some((a) => a.id === id);
+  if (!hasAccount(out.settings.defaultAccountId)) out.settings.defaultAccountId = out.accounts[0].id;
+  const fallback = out.settings.defaultAccountId;
+  out.txns = out.txns.filter((t) => {
+    if (t.kind === 'transfer') return hasAccount(t.accountId) && hasAccount(t.toAccountId) && t.accountId !== t.toAccountId;
+    if (t.kind === 'adjust' || (t.kind === 'expense' && t.cardId)) return true;
+    if (!hasAccount(t.accountId)) t.accountId = fallback;
+    return true;
+  });
+
+  if (isObj(data.debtHistory)) {
+    for (const k of Object.keys(data.debtHistory)) {
+      const v = toNum(data.debtHistory[k]);
+      if (isISO(k) && Number.isFinite(v)) out.debtHistory[k] = round2(v);
+    }
+  }
+  return out;
+}
+
+function cleanFx(fx) {
+  if (!isObj(fx)) return null;
+  const n = (v) => (Number.isFinite(toNum(v)) ? round2(toNum(v)) : 0);
+  const int = (v) => (Number.isInteger(v) && v >= 0 ? v : 0);
+  const iso = (v) => (isISO(v) ? v : null);
+  const freq = (v) => (FREQS[v] ? v : 'monthly');
+  const out = {};
+  const part = (k) => (isObj(fx[k]) && isId(fx[k].id) ? fx[k] : null);
+  let p;
+  if ((p = part('card'))) out.card = { id: p.id, amount: n(p.amount) };
+  if ((p = part('bill'))) out.bill = { id: p.id, from: iso(p.from), to: iso(p.to), freq: freq(p.freq) };
+  if ((p = part('debt'))) out.debt = { id: p.id, amount: n(p.amount), counted: int(p.counted), steps: int(p.steps), from: iso(p.from), to: iso(p.to), freq: freq(p.freq) };
+  if ((p = part('adjust'))) out.adjust = { id: p.id, delta: n(p.delta) };
+  if ((p = part('goal'))) out.goal = { id: p.id, delta: n(p.delta) };
+  return out;
+}
+
+function cleanTxn(r, data) {
+  if (!TXN_KINDS.includes(r.kind) || !isISO(r.date)) return null;
+  const amount = round2(toNum(r.amount));
+  if (!(amount > 0)) return null;
+  const ref = (v) => (isId(v) ? v : undefined);
+  const t = { id: r.id, kind: r.kind, amount, date: r.date, note: str(r.note, 200), createdAt: Number.isFinite(r.createdAt) && r.createdAt > 0 ? r.createdAt : 0 };
+  switch (r.kind) {
+    case 'expense':
+      Object.assign(t, { categoryId: ref(r.categoryId), cardId: ref(r.cardId), billId: ref(r.billId) });
+      if (!t.cardId) t.accountId = ref(r.accountId);
+      break;
+    case 'income': t.accountId = ref(r.accountId); break;
+    case 'debt': {
+      const n = toNum(r.installments);
+      Object.assign(t, { debtId: ref(r.debtId), accountId: ref(r.accountId), installments: Number.isInteger(n) && n >= 0 ? n : r.countsInstallment || r.advanceDue ? 1 : 0 });
+      break;
+    }
+    case 'goal': Object.assign(t, { goalId: ref(r.goalId), accountId: ref(r.accountId), withdraw: truthy(r.withdraw) }); break;
+    case 'adjust':
+      if (r.direction !== 'up' && r.direction !== 'down') return null;
+      Object.assign(t, { debtId: ref(r.debtId), direction: r.direction, reason: ADJUST_REASONS.includes(r.reason) ? r.reason : 'correction' });
+      break;
+    case 'transfer': Object.assign(t, { accountId: ref(r.accountId), toAccountId: ref(r.toAccountId) }); break;
+  }
+  for (const k of Object.keys(t)) if (t[k] === undefined) delete t[k];
+  // Entries whose debt or goal was deleted stay, marked as such (BUG-08).
+  const debtRef = t.debtId || t.cardId;
+  const unlinked = ((t.kind === 'debt' || t.kind === 'adjust') && !t.debtId) || (t.kind === 'goal' && !t.goalId); // v1 deleteDebt removed the link
+  if (r.orphan === true || unlinked || (debtRef && !data.debts.some((d) => d.id === debtRef)) || (t.goalId && !data.goals.some((g) => g.id === t.goalId))) {
+    t.orphan = true;
+    if (t.goalId) t.goalName = str(r.goalName, 60);
+    else t.debtName = str(r.debtName, 60);
+  }
+  t.fx = cleanFx(r.fx) || legacyFx({ ...t, prevDue: r.prevDue, countsInstallment: r.countsInstallment, advanceDue: r.advanceDue }, data);
+  return t;
 }
 
 // ---------- lookups ----------
@@ -73,6 +485,65 @@ export const cat = (id) => db.categories.find((c) => c.id === id) || { name: 'Un
 export const debt = (id) => db.debts.find((d) => d.id === id);
 export const goal = (id) => db.goals.find((g) => g.id === id);
 export const bill = (id) => db.bills.find((b) => b.id === id);
+export const account = (id) => db.accounts.find((a) => a.id === id);
+
+// Replace an existing record's contents in place (callers may hold a reference to it).
+function overwrite(target, src) {
+  for (const k of Object.keys(target)) delete target[k];
+  return Object.assign(target, src);
+}
+
+// ---------- wallets ----------
+export function defaultAccountId() {
+  const id = db.settings.defaultAccountId;
+  return account(id) ? id : db.accounts[0]?.id ?? null;
+}
+
+// Money in or out of wallet `id` for one entry. Card purchases and debt adjustments are not cash.
+function cashDelta(t, id) {
+  switch (t.kind) {
+    case 'income': return t.accountId === id ? t.amount : 0;
+    case 'expense': return !t.cardId && t.accountId === id ? -t.amount : 0;
+    case 'debt': return t.accountId === id ? -t.amount : 0;
+    case 'goal': return t.accountId === id ? (t.withdraw ? t.amount : -t.amount) : 0;
+    case 'transfer': return (t.toAccountId === id ? t.amount : 0) - (t.accountId === id ? t.amount : 0);
+    default: return 0;
+  }
+}
+// The opening balance is the balance at the start of openingDate; entries before it are already in it.
+export function accountBalance(id) {
+  const a = account(id);
+  if (!a) return 0;
+  let s = a.opening;
+  for (const t of db.txns) if (!a.openingDate || t.date >= a.openingDate) s += cashDelta(t, id);
+  return round2(s);
+}
+export const totalCash = () => sum(db.accounts, (a) => accountBalance(a.id));
+
+export function saveAccount(input = {}) {
+  return tx(() => {
+    const existing = isId(input.id) ? account(input.id) : null;
+    const patch = defined(input);
+    const a = shapeAccount({ ...(existing || {}), ...patch }, true);
+    a.id = existing ? existing.id : uid();
+    // A new wallet's starting balance is as of today unless a date is given. Editing keeps the date,
+    // so "balance now" corrections can move `opening` by the difference.
+    if (!existing && patch.openingDate === undefined) a.openingDate = today();
+    if (existing) return overwrite(existing, a);
+    db.accounts.push(a);
+    return a;
+  });
+}
+
+export function deleteAccount(id) {
+  return tx(() => {
+    if (!account(id)) return;
+    if (db.txns.some((t) => t.accountId === id || t.toAccountId === id)) fail('This wallet has entries. Move or delete them first.', 'id');
+    if (db.accounts.length <= 1) fail('You need at least one wallet.', 'id');
+    db.accounts = db.accounts.filter((a) => a.id !== id);
+    if (db.settings.defaultAccountId === id) db.settings.defaultAccountId = db.accounts[0].id;
+  });
+}
 
 // ---------- pay periods (bi-weekly) ----------
 export function period(iso = today()) {
@@ -89,9 +560,18 @@ export function paydaysUntil(until) {
 }
 
 // ---------- debts ----------
+const debtFreq = (d) => (d.type === 'card' ? 'monthly' : FREQS[d.frequency] ? d.frequency : 'monthly');
+// What one payment of this debt normally is.
+const dueAmount = (d) => (d.type === 'card' ? d.plannedPayment || d.paymentAmount : d.paymentAmount || d.plannedPayment) || d.balance;
+
 export function paymentsLeft(d) {
-  if (d.balance <= 0) return 0;
-  if (isScheduled(d)) return Math.max(0, (d.totalPayments || 0) - (d.paymentsMade || 0));
+  if (!(d.balance > 0)) return 0;
+  if (isScheduled(d)) {
+    // Penalties or fees can leave a balance after the last scheduled payment: still at least 1 to go.
+    const bySchedule = (d.totalPayments || 0) - (d.paymentsMade || 0);
+    const byBalance = d.paymentAmount > 0 ? Math.ceil(round2(d.balance / d.paymentAmount) - 1e-9) : 1;
+    return Math.max(1, bySchedule, byBalance);
+  }
   const pay = d.plannedPayment || d.paymentAmount;
   if (!pay) return null;
   if (d.type === 'card' && d.rate > 0) {
@@ -114,197 +594,556 @@ export function debtStatus(d) {
 // Estimated date of the last payment.
 export function payoffDate(d) {
   const left = paymentsLeft(d);
-  if (!left || left === Infinity || !d.nextDue) return null;
-  const freq = d.type === 'card' ? 'monthly' : d.frequency || 'monthly';
+  if (!left || left === Infinity) return null;
+  const freq = debtFreq(d);
+  if (!d.nextDue) {
+    // Undated debts (e.g. owed to a person) are estimated as monthly payments starting a month from now.
+    if (freq !== 'monthly') return null;
+    let date = advance(today(), 'monthly');
+    for (let i = 1; i < left; i++) date = advance(date, 'monthly');
+    return date;
+  }
   if (freq === 'once') return d.nextDue;
   let date = d.nextDue;
-  for (let i = 1; i < left; i++) date = advance(date, freq, d.dueDay);
+  for (let i = 1; i < left; i++) date = advance(date, freq, d.dueDay, d.dueDays) || date;
   return date;
 }
 
-export const totalDebt = () => round2(db.debts.reduce((s, d) => s + Math.max(0, d.balance), 0));
+export const totalDebt = () => sum(db.debts, (d) => Math.max(0, d.balance));
 
 export function monthlyObligations() {
   let s = 0;
   for (const d of db.debts) {
-    if (d.balance <= 0) continue;
-    if (d.type === 'card') s += d.plannedPayment || d.paymentAmount || 0;
-    else if (d.type === 'person') s += d.plannedPayment || 0;
-    else s += (d.paymentAmount || 0) * (PER_MONTH[d.frequency] ?? 1);
+    if (!(d.balance > 0)) continue;
+    let m;
+    if (d.type === 'card') m = d.plannedPayment || d.paymentAmount || 0;
+    else if (d.type === 'person') m = d.plannedPayment || 0;
+    else if (debtFreq(d) === 'once') m = !d.nextDue || daysBetween(today(), d.nextDue) <= 31 ? d.paymentAmount || d.balance : 0;
+    else m = (d.paymentAmount || 0) * (PER_MONTH[debtFreq(d)] ?? 1);
+    s += Math.min(m, d.balance);
   }
   return round2(s);
 }
 
-export function snapshotDebt(force = true) {
+// Records today's total debt for the chart.
+function snap(force = true) {
   const t = today();
   if (!force && db.debtHistory[t] !== undefined) return;
   db.debtHistory[t] = totalDebt();
-  if (force) save();
+}
+export function snapshotDebt(force = true) {
+  if (!force) return snap(false);
+  tx(() => snap(true));
 }
 
-export function saveDebt(input) {
-  const existing = input.id && debt(input.id);
-  const d = existing ? Object.assign(existing, input) : { id: uid(), createdAt: today(), ...input };
-  if (d.nextDue) d.dueDay = parseISO(d.nextDue).getDate();
-  d.original = Math.max(d.original || 0, d.balance, isScheduled(d) ? (d.paymentAmount || 0) * (d.totalPayments || 0) : 0);
-  if (!existing) db.debts.push(d);
-  snapshotDebt();
-  save();
-  return d;
+const paidOn = (id) => sum(db.txns.filter((t) => t.kind === 'debt' && t.debtId === id && !t.orphan), (t) => t.amount);
+const scheduleTotal = (d) => (isScheduled(d) ? round2((d.paymentAmount || 0) * (d.totalPayments || 0)) : 0);
+
+export function saveDebt(input = {}) {
+  return tx(() => {
+    const existing = isId(input.id) ? debt(input.id) : null;
+    const d = shapeDebt({ ...(existing ? JSON.parse(JSON.stringify(existing)) : {}), ...defined(input) }, true);
+    d.id = existing ? existing.id : uid();
+    d.createdAt = existing ? existing.createdAt : today();
+    // Keep the intended day (e.g. the 31st after a February date) unless the user picked a new date.
+    if (!d.nextDue) d.dueDay = null;
+    else if (!existing || d.nextDue !== existing.nextDue || !existing.dueDay) d.dueDay = parseISO(d.nextDue).getDate();
+    else d.dueDay = existing.dueDay;
+    // "% paid off" baseline. A corrected balance resets it to balance + what was really paid (BUG-17).
+    const sched = scheduleTotal(d);
+    if (!existing) d.original = Math.max(d.original || 0, d.balance, sched);
+    else if (d.balance !== existing.balance || sched !== scheduleTotal(existing)) d.original = Math.max(round2(d.balance + paidOn(d.id)), sched);
+    else d.original = Math.max(existing.original || 0, d.balance, sched);
+    const out = existing ? overwrite(existing, d) : (db.debts.push(d), d);
+    snap();
+    return out;
+  });
 }
 
+// Payments and card purchases stay in Activity, marked as belonging to a deleted debt.
 export function deleteDebt(id) {
-  db.debts = db.debts.filter((d) => d.id !== id);
-  for (const t of db.txns) {
-    if (t.debtId === id) delete t.debtId;
-    if (t.cardId === id) delete t.cardId;
-  }
-  snapshotDebt();
-  save();
+  return tx(() => {
+    const d = debt(id);
+    if (!d) return;
+    db.debts = db.debts.filter((x) => x.id !== id);
+    for (const t of db.txns) {
+      if (t.debtId === id || t.cardId === id) { t.orphan = true; t.debtName = d.name; }
+    }
+    snap();
+  });
 }
 
-// ---------- bills & goals ----------
-export function saveBill(input) {
-  const existing = input.id && bill(input.id);
-  const b = existing ? Object.assign(existing, input) : { id: uid(), ...input };
-  if (b.nextDue) b.dueDay = parseISO(b.nextDue).getDate();
-  if (!existing) db.bills.push(b);
-  save();
-  return b;
+// How many scheduled payments `amount` covers: 0 if less than one payment.
+export function suggestInstallments(debtId, amount) {
+  const d = debt(debtId);
+  const a = Number(amount);
+  if (!d || !(d.balance > 0) || !(a > 0)) return 0;
+  if (d.type === 'card') return a + 0.001 >= (d.paymentAmount || 0) ? 1 : 0; // one statement per month
+  const per = isScheduled(d) ? d.paymentAmount : d.plannedPayment || d.paymentAmount;
+  if (!(per > 0)) return d.nextDue ? 1 : 0;
+  const n = Math.floor((a + 0.001) / per);
+  const left = paymentsLeft(d);
+  return Number.isFinite(left) && left > 0 ? Math.min(n, left) : n;
+}
+
+const byNewest = (a, b) => b.date.localeCompare(a.date) || (b.createdAt || 0) - (a.createdAt || 0);
+export function debtActivity(debtId) {
+  return db.txns
+    .filter((t) => ((t.kind === 'debt' || t.kind === 'adjust') && t.debtId === debtId) || (t.kind === 'expense' && t.cardId === debtId))
+    .sort(byNewest);
+}
+
+// ---------- bills, goals, categories ----------
+export function saveBill(input = {}) {
+  return tx(() => {
+    const existing = isId(input.id) ? bill(input.id) : null;
+    const b = shapeBill({ ...(existing ? JSON.parse(JSON.stringify(existing)) : {}), ...defined(input) }, true);
+    b.id = existing ? existing.id : uid();
+    if (!existing || b.nextDue !== existing.nextDue || !existing.dueDay) b.dueDay = parseISO(b.nextDue).getDate();
+    else b.dueDay = existing.dueDay;
+    if (existing && b.nextDue !== existing.nextDue) b.done = false; // a new date means it is due again
+    if (existing) return overwrite(existing, b);
+    db.bills.push(b);
+    return b;
+  });
 }
 export function deleteBill(id) {
-  db.bills = db.bills.filter((b) => b.id !== id);
-  save();
+  return tx(() => { db.bills = db.bills.filter((b) => b.id !== id); });
 }
-export function saveGoal(input) {
-  const existing = input.id && goal(input.id);
-  const g = existing ? Object.assign(existing, input) : { id: uid(), saved: 0, createdAt: today(), ...input };
-  if (!existing) db.goals.push(g);
-  save();
-  return g;
+
+export function saveGoal(input = {}) {
+  return tx(() => {
+    const existing = isId(input.id) ? goal(input.id) : null;
+    const g = shapeGoal({ ...(existing ? JSON.parse(JSON.stringify(existing)) : {}), ...defined(input) }, true);
+    g.id = existing ? existing.id : uid();
+    g.createdAt = existing ? existing.createdAt : today();
+    if (existing) return overwrite(existing, g);
+    db.goals.push(g);
+    return g;
+  });
 }
 export function deleteGoal(id) {
-  db.goals = db.goals.filter((g) => g.id !== id);
-  for (const t of db.txns) if (t.goalId === id) delete t.goalId;
-  save();
+  return tx(() => {
+    const g = goal(id);
+    if (!g) return;
+    db.goals = db.goals.filter((x) => x.id !== id);
+    for (const t of db.txns) if (t.goalId === id) { t.orphan = true; t.goalName = g.name; }
+  });
 }
-export function saveCategory(input) {
-  const existing = input.id && db.categories.find((c) => c.id === input.id);
-  if (existing) Object.assign(existing, input);
-  else db.categories.push({ id: uid(), ...input });
-  save();
+
+export function saveCategory(input = {}) {
+  return tx(() => {
+    const existing = isId(input.id) ? db.categories.find((c) => c.id === input.id) : null;
+    const c = shapeCategory({ ...(existing || {}), ...defined(input) }, true);
+    c.id = existing ? existing.id : uid();
+    if (existing) return overwrite(existing, c);
+    db.categories.push(c);
+    return c;
+  });
 }
 export function deleteCategory(id) {
-  db.categories = db.categories.filter((c) => c.id !== id);
-  save();
+  return tx(() => {
+    db.categories = db.categories.filter((c) => c.id !== id);
+    if (db.settings.lastCategoryId === id) db.settings.lastCategoryId = null;
+  });
+}
+
+// Category ids, most used in the last 30 days first (ties keep the original order).
+export function categoryOrder() {
+  const to = today(), from = addDays(to, -29);
+  const uses = new Map();
+  for (const t of db.txns) {
+    if (t.kind === 'expense' && t.categoryId && t.date >= from && t.date <= to) uses.set(t.categoryId, (uses.get(t.categoryId) || 0) + 1);
+  }
+  return db.categories
+    .map((c, i) => ({ id: c.id, i, n: uses.get(c.id) || 0 }))
+    .sort((a, b) => b.n - a.n || a.i - b.i)
+    .map((x) => x.id);
+}
+
+// Savings plan: how much to put aside each payday to reach the goal by its deadline.
+export function goalPlan(g) {
+  const remaining = round2(Math.max(0, g.target - g.saved));
+  const p = period();
+  const depositedThisPeriod = round2(Math.max(0, sum(
+    db.txns.filter((t) => t.kind === 'goal' && t.goalId === g.id && !t.orphan && t.date >= p.start && t.date <= p.end),
+    (t) => (t.withdraw ? -t.amount : t.amount),
+  )));
+  const base = { remaining, perPayday: 0, paydaysLeft: null, depositedThisPeriod, setAsideNow: 0 };
+  if (remaining <= 0) return { ...base, status: 'reached' };
+  if (!g.deadline) return { ...base, status: 'no-deadline' };
+  if (g.deadline < today()) return { ...base, paydaysLeft: 0, status: 'overdue' };
+  const paydaysLeft = 1 + paydaysUntil(g.deadline); // this period's pay counts too
+  // Spread what was left at the start of this period, so the target doesn't move after a deposit.
+  const perPayday = Math.ceil(round2((remaining + depositedThisPeriod) / paydaysLeft));
+  const setAsideNow = round2(Math.min(remaining, Math.max(0, perPayday - depositedThisPeriod)));
+  return { remaining, perPayday, paydaysLeft, depositedThisPeriod, setAsideNow, status: 'on-track' };
 }
 
 // ---------- transactions ----------
-// kind: 'expense' | 'income' | 'debt' (payment) | 'goal' (deposit / withdrawal)
-// Each transaction's side effects on debts, bills and goals are applied and reverted
-// symmetrically, so editing or deleting one keeps balances correct.
+// kind: 'expense' | 'income' | 'debt' (payment) | 'goal' (deposit / withdrawal) | 'adjust' | 'transfer'.
+// apply() records exactly what it changed in t.fx and revert() undoes that record, so editing or deleting
+// entries in any order keeps balances right. A due date moved by a later payment steps back with retreat().
+const touchesDebt = (t) => t.kind === 'debt' || t.kind === 'adjust' || (t.kind === 'expense' && !!t.cardId);
+
 function apply(t) {
-  if (t.kind === 'expense' && t.cardId) {
-    const c = debt(t.cardId);
-    if (c) c.balance = round2(c.balance + t.amount);
-  }
-  if (t.kind === 'expense' && t.billId) {
-    const b = bill(t.billId);
-    if (b && b.nextDue) {
-      t.prevDue = b.nextDue;
-      b.nextDue = advance(b.nextDue, b.frequency, b.dueDay);
-      if (!b.nextDue) b.done = true;
+  const fx = {};
+  if (t.kind === 'expense') {
+    const c = t.cardId && debt(t.cardId);
+    if (c) {
+      c.balance = round2(c.balance + t.amount);
+      fx.card = { id: c.id, amount: t.amount };
+    }
+    const b = t.billId && bill(t.billId);
+    if (b && b.nextDue && !b.done) {
+      const to = advance(b.nextDue, b.frequency, b.dueDay, b.dueDays);
+      fx.bill = { id: b.id, from: b.nextDue, to, freq: b.frequency };
+      if (to) b.nextDue = to;
+      else b.done = true;
     }
   }
   if (t.kind === 'debt') {
     const d = debt(t.debtId);
     if (d) {
       d.balance = round2(d.balance - t.amount);
-      if (t.countsInstallment && isScheduled(d)) d.paymentsMade = (d.paymentsMade || 0) + 1;
-      if (t.advanceDue && d.nextDue) {
-        t.prevDue = d.nextDue;
-        const freq = d.type === 'card' ? 'monthly' : d.frequency || 'monthly';
-        d.nextDue = advance(d.nextDue, freq, d.dueDay) || d.nextDue;
+      const n = t.installments || 0;
+      const room = Math.max(0, (d.totalPayments || 0) - (d.paymentsMade || 0));
+      const e = { id: d.id, amount: t.amount, counted: isScheduled(d) ? Math.min(n, room) : 0, steps: 0, from: null, to: null, freq: debtFreq(d) };
+      d.paymentsMade = (d.paymentsMade || 0) + e.counted;
+      if (n && d.nextDue) {
+        let to = d.nextDue;
+        for (let i = 0; i < n; i++) {
+          const next = advance(to, e.freq, d.dueDay, d.dueDays);
+          if (!next) break;
+          to = next;
+          e.steps++;
+        }
+        e.from = d.nextDue;
+        e.to = to;
+        d.nextDue = to;
       }
+      fx.debt = e;
+    }
+  }
+  if (t.kind === 'adjust') {
+    const d = debt(t.debtId);
+    if (d) {
+      const delta = t.direction === 'up' ? t.amount : -t.amount;
+      d.balance = round2(d.balance + delta);
+      fx.adjust = { id: d.id, delta };
     }
   }
   if (t.kind === 'goal') {
     const g = goal(t.goalId);
-    if (g) g.saved = round2(g.saved + (t.withdraw ? -t.amount : t.amount));
+    if (g) {
+      const delta = t.withdraw ? -t.amount : t.amount;
+      g.saved = round2(g.saved + delta);
+      fx.goal = { id: g.id, delta };
+    }
   }
+  t.fx = fx;
 }
 
 function revert(t) {
-  if (t.kind === 'expense' && t.cardId) {
-    const c = debt(t.cardId);
-    if (c) c.balance = round2(c.balance - t.amount);
+  const fx = t.fx || legacyFx(t);
+  if (fx.card) {
+    const c = debt(fx.card.id);
+    if (c) c.balance = round2(c.balance - fx.card.amount);
   }
-  if (t.kind === 'expense' && t.billId && t.prevDue) {
-    const b = bill(t.billId);
-    if (b) { b.nextDue = t.prevDue; b.done = false; }
-  }
-  if (t.kind === 'debt') {
-    const d = debt(t.debtId);
-    if (d) {
-      d.balance = round2(d.balance + t.amount);
-      if (t.countsInstallment && isScheduled(d)) d.paymentsMade = Math.max(0, (d.paymentsMade || 0) - 1);
-      if (t.advanceDue && t.prevDue) d.nextDue = t.prevDue;
+  if (fx.bill) {
+    const b = bill(fx.bill.id);
+    if (b) {
+      if (!fx.bill.to) {
+        if (b.done) { b.done = false; b.nextDue = fx.bill.from; }
+      } else if (b.nextDue === fx.bill.to) b.nextDue = fx.bill.from;
+      else if (b.nextDue) b.nextDue = retreat(b.nextDue, fx.bill.freq, b.dueDay, b.dueDays) || fx.bill.from;
     }
   }
-  if (t.kind === 'goal') {
-    const g = goal(t.goalId);
-    if (g) g.saved = round2(g.saved - (t.withdraw ? -t.amount : t.amount));
+  if (fx.debt) {
+    const d = debt(fx.debt.id);
+    if (d) {
+      d.balance = round2(d.balance + fx.debt.amount);
+      if (fx.debt.counted) d.paymentsMade = Math.max(0, (d.paymentsMade || 0) - fx.debt.counted);
+      if (fx.debt.steps && d.nextDue) {
+        if (d.nextDue === fx.debt.to && fx.debt.from) d.nextDue = fx.debt.from;
+        else for (let i = 0; i < fx.debt.steps; i++) d.nextDue = retreat(d.nextDue, fx.debt.freq, d.dueDay, d.dueDays) || d.nextDue;
+      }
+    }
   }
+  if (fx.adjust) {
+    const d = debt(fx.adjust.id);
+    if (d) d.balance = round2(d.balance - fx.adjust.delta);
+  }
+  if (fx.goal) {
+    const g = goal(fx.goal.id);
+    if (g) g.saved = round2(g.saved - fx.goal.delta);
+  }
+  delete t.fx;
 }
 
-const touchesDebt = (t) => t.kind === 'debt' || (t.kind === 'expense' && t.cardId);
-
-export function saveTxn(input) {
-  const old = input.id && db.txns.find((t) => t.id === input.id);
-  let t;
-  if (old) {
-    revert(old);
-    // Keep the bill link on edit, but the due-date bump is re-done from the restored date.
-    t = Object.assign(old, input);
-  } else {
-    t = { id: uid(), createdAt: Date.now(), ...input };
-    db.txns.push(t);
+// Effect record for entries saved before t.fx existed (v1: prevDue / countsInstallment / advanceDue).
+function legacyFx(t, data = db) {
+  const find = (k, id) => data[k].find((x) => x.id === id);
+  const fx = {};
+  if (t.kind === 'expense' && isId(t.cardId)) fx.card = { id: t.cardId, amount: t.amount };
+  if (t.kind === 'expense' && isId(t.billId) && isISO(t.prevDue)) {
+    const b = find('bills', t.billId);
+    const freq = b?.frequency || 'monthly';
+    fx.bill = { id: t.billId, from: t.prevDue, to: advance(t.prevDue, freq, b?.dueDay, b?.dueDays), freq };
   }
-  t.amount = round2(t.amount);
-  apply(t);
-  if (touchesDebt(t) || (old && touchesDebt(old))) snapshotDebt();
-  save();
+  if (t.kind === 'debt' && isId(t.debtId)) {
+    const d = find('debts', t.debtId);
+    const n = Number.isInteger(t.installments) ? t.installments : t.countsInstallment || t.advanceDue ? 1 : 0;
+    const counts = t.countsInstallment === undefined ? n > 0 : !!t.countsInstallment;
+    const e = { id: t.debtId, amount: t.amount, counted: d && isScheduled(d) && counts ? n : 0, steps: 0, from: null, to: null, freq: d ? debtFreq(d) : 'monthly' };
+    if (n && d && isISO(t.prevDue) && t.advanceDue !== false) {
+      let to = t.prevDue;
+      for (let i = 0; i < n; i++) {
+        const next = advance(to, e.freq, d.dueDay, d.dueDays);
+        if (!next) break;
+        to = next;
+        e.steps++;
+      }
+      Object.assign(e, { from: t.prevDue, to });
+    }
+    fx.debt = e;
+  }
+  if (t.kind === 'adjust' && isId(t.debtId)) fx.adjust = { id: t.debtId, delta: t.direction === 'up' ? t.amount : -t.amount };
+  if (t.kind === 'goal' && isId(t.goalId)) fx.goal = { id: t.goalId, delta: t.withdraw ? -t.amount : t.amount };
+  return fx;
+}
+
+// Balance of debt `id` / savings of goal `id` as they would be with `old`'s effect undone.
+function balanceWithout(old, id) {
+  const d = debt(id);
+  const fx = old ? old.fx || legacyFx(old) : {};
+  let b = d.balance;
+  if (fx.debt?.id === id) b += fx.debt.amount;
+  if (fx.adjust?.id === id) b -= fx.adjust.delta;
+  if (fx.card?.id === id) b -= fx.card.amount;
+  return round2(b);
+}
+function savedWithout(old, id) {
+  const fx = old ? old.fx || legacyFx(old) : {};
+  return round2(goal(id).saved - (fx.goal?.id === id ? fx.goal.delta : 0));
+}
+
+// Builds a clean entry from what the UI sent. Only the fields of its kind are kept (contract §2).
+function buildTxn(input, old) {
+  const kind = input.kind ?? old?.kind;
+  if (!TXN_KINDS.includes(kind)) fail('Pick what kind of entry this is', 'kind');
+  const rawAmount = input.amount ?? old?.amount;
+  const n = toNum(rawAmount);
+  if (!Number.isFinite(n) || round2(n) <= 0) fail('Enter an amount', 'amount');
+  if (n > MAX_AMOUNT) fail('That amount is too big', 'amount');
+  const amount = round2(n);
+  const date = input.date ?? old?.date ?? today();
+  if (!isISO(date)) fail('Pick a valid date', 'date');
+  const t = { id: old?.id || uid(), kind, amount, date, note: str(input.note ?? old?.note, 200), createdAt: old?.createdAt ?? Date.now() };
+  // An entry whose debt or goal was deleted keeps that link; it is never moved to another one (BUG-08).
+  const orphan = !!old?.orphan && old.kind === kind;
+  const wallet = (id, field = 'accountId', msg = 'Pick a wallet') => {
+    const a = absent(id) ? defaultAccountId() : id;
+    if (!account(a)) fail(msg, field);
+    return a;
+  };
+  const pickDebt = (id) => {
+    const d = debt(id);
+    if (!d) fail('Pick a debt', 'debtId');
+    return d;
+  };
+  switch (kind) {
+    case 'expense':
+      if (isId(input.categoryId)) t.categoryId = input.categoryId;
+      if (orphan && old.cardId) t.cardId = old.cardId;
+      else if (!absent(input.cardId)) {
+        const c = debt(input.cardId);
+        if (!c || c.type !== 'card') fail('Pick a card', 'cardId');
+        t.cardId = c.id;
+      } else t.accountId = wallet(input.accountId);
+      if (isId(input.billId) && (bill(input.billId) || input.billId === old?.billId)) t.billId = input.billId;
+      break;
+    case 'income':
+      t.accountId = wallet(input.accountId);
+      break;
+    case 'debt': {
+      if (orphan) t.debtId = old.debtId;
+      else {
+        const d = pickDebt(input.debtId);
+        t.debtId = d.id;
+        const room = balanceWithout(old, d.id);
+        if (amount > room + 0.001) fail(`That's more than the ${peso(Math.max(0, room))} left on ${d.name}`, 'amount');
+      }
+      t.accountId = wallet(input.accountId);
+      if (!absent(input.installments)) {
+        const k = toNum(input.installments);
+        if (!Number.isInteger(k) || k < 0 || k > 1000) fail('Enter how many payments this covers', 'installments');
+        t.installments = k;
+      } else if (old?.kind === 'debt' && old.debtId === t.debtId) t.installments = old.installments || 0;
+      else t.installments = suggestInstallments(t.debtId, amount);
+      break;
+    }
+    case 'goal': {
+      if (orphan) t.goalId = old.goalId;
+      else {
+        const g = goal(input.goalId);
+        if (!g) fail('Pick a goal', 'goalId');
+        t.goalId = g.id;
+      }
+      t.accountId = wallet(input.accountId);
+      t.withdraw = truthy(input.withdraw);
+      if (t.withdraw && !orphan) {
+        const room = savedWithout(old, t.goalId);
+        if (amount > room + 0.001) fail(`Only ${peso(Math.max(0, room))} is saved in ${goal(t.goalId).name}`, 'amount');
+      }
+      break;
+    }
+    case 'adjust': {
+      if (orphan) t.debtId = old.debtId;
+      else t.debtId = pickDebt(input.debtId).id;
+      if (input.direction !== 'up' && input.direction !== 'down') fail('Choose whether the balance goes up or down', 'direction');
+      t.direction = input.direction;
+      t.reason = ADJUST_REASONS.includes(input.reason) ? input.reason : 'correction';
+      if (t.direction === 'down' && !orphan) {
+        const room = balanceWithout(old, t.debtId);
+        if (amount > room + 0.001) fail(`That's more than the ${peso(Math.max(0, room))} left on ${debt(t.debtId).name}`, 'amount');
+      }
+      break;
+    }
+    case 'transfer':
+      if (absent(input.accountId) || !account(input.accountId)) fail('Pick the wallet the money comes from', 'accountId');
+      if (absent(input.toAccountId) || !account(input.toAccountId)) fail('Pick the wallet the money goes to', 'toAccountId');
+      if (input.accountId === input.toAccountId) fail('Pick two different wallets', 'toAccountId');
+      t.accountId = input.accountId;
+      t.toAccountId = input.toAccountId;
+      break;
+  }
+  if (orphan) {
+    t.orphan = true;
+    if (old.debtName !== undefined) t.debtName = old.debtName;
+    if (old.goalName !== undefined) t.goalName = old.goalName;
+  }
+  for (const k of Object.keys(t)) if (t[k] === undefined) delete t[k];
   return t;
 }
 
+export function saveTxn(input = {}) {
+  return tx(() => {
+    const old = isId(input.id) ? db.txns.find((t) => t.id === input.id) : null;
+    const t = buildTxn(defined(input), old);
+    let out = t;
+    const oldTouched = !!old && touchesDebt(old);
+    if (old) {
+      revert(old);
+      out = overwrite(old, t);
+    } else db.txns.push(t);
+    apply(out);
+    if (oldTouched || touchesDebt(out)) snap();
+    return out;
+  });
+}
+
+// Removes an entry and undoes its effects. Returns a copy for Undo (see restoreTxn), or null.
 export function deleteTxn(id) {
-  const t = db.txns.find((x) => x.id === id);
-  if (!t) return;
-  revert(t);
-  db.txns = db.txns.filter((x) => x.id !== id);
-  if (touchesDebt(t)) snapshotDebt();
-  save();
+  return tx(() => {
+    const t = db.txns.find((x) => x.id === id);
+    if (!t) return null;
+    const copy = JSON.parse(JSON.stringify(t));
+    const touched = touchesDebt(t);
+    revert(t);
+    db.txns = db.txns.filter((x) => x !== t);
+    if (touched) snap();
+    return copy;
+  });
+}
+
+// Puts back an entry returned by deleteTxn (same id when it is free) and re-applies its effects.
+export function restoreTxn(copy) {
+  return tx(() => {
+    if (!isObj(copy)) fail('Nothing to undo', 'id');
+    const c = defined(copy);
+    const t = buildTxn(c, c.orphan ? { ...c, fx: undefined } : null);
+    t.id = isId(c.id) && !db.txns.some((x) => x.id === c.id) ? c.id : uid();
+    if (Number.isFinite(c.createdAt)) t.createdAt = c.createdAt;
+    db.txns.push(t);
+    apply(t);
+    if (touchesDebt(t)) snap();
+    return t;
+  });
 }
 
 export function txnsBetween(start, end) {
   return db.txns.filter((t) => t.date >= start && t.date <= end);
 }
 
-export function sumBy(list, kind) {
-  return round2(list.filter((t) => t.kind === kind).reduce((s, t) => s + (kind === 'goal' && t.withdraw ? -t.amount : t.amount), 0));
+export function sumBy(items, kind) {
+  return sum(items.filter((t) => t.kind === kind), (t) => (kind === 'goal' && t.withdraw ? -t.amount : t.amount));
 }
 
-// Everything due (bills + debt payments) up to `until`, including overdue items.
+// Everything due (bills + debt payments) up to `until`, including overdue items and repeats.
 export function upcoming(until) {
+  const now = today();
   const items = [];
+  const MAX_REPEATS = 60;
   for (const b of db.bills) {
-    if (b.done || !b.nextDue || b.nextDue > until) continue;
-    items.push({ kind: 'bill', id: b.id, name: b.name, amount: b.amount, due: b.nextDue, icon: cat(b.categoryId).emoji });
+    if (b.done || !b.nextDue) continue;
+    for (let due = b.nextDue, i = 0; due && due <= until && i < MAX_REPEATS; due = advance(due, b.frequency, b.dueDay, b.dueDays), i++) {
+      items.push({ kind: 'bill', id: b.id, name: b.name, amount: b.amount, due, icon: cat(b.categoryId).emoji, late: due < now });
+    }
   }
   for (const d of db.debts) {
-    if (d.balance <= 0 || !d.nextDue || d.nextDue > until) continue;
-    const amt = d.type === 'card' ? d.plannedPayment || d.paymentAmount || d.balance : d.paymentAmount || d.plannedPayment || d.balance;
-    items.push({ kind: 'debt', id: d.id, name: d.name, amount: Math.min(amt, d.balance), due: d.nextDue, icon: DEBT_TYPES[d.type].icon });
+    if (!(d.balance > 0) || !d.nextDue) continue;
+    const per = dueAmount(d);
+    let left = d.balance;
+    for (let due = d.nextDue, i = 0; due && due <= until && left > 0 && i < MAX_REPEATS; due = advance(due, debtFreq(d), d.dueDay, d.dueDays), i++) {
+      items.push({ kind: 'debt', id: d.id, name: d.name, amount: round2(Math.min(per, left)), due, icon: DEBT_TYPES[d.type]?.icon || '💸', late: due < now });
+      left = round2(left - per);
+    }
   }
   return items.sort((a, b) => a.due.localeCompare(b.due));
+}
+
+// Home screen hero: what can be spent until payday. Cash is every wallet, so last period's leftover
+// (or pay credited a day early) carries over automatically.
+export function freeToSpend() {
+  const p = period();
+  const cash = totalCash();
+  const dueItems = upcoming(p.end);
+  const due = sum(dueItems, (x) => x.amount);
+  const setAsideItems = [];
+  for (const g of db.goals) {
+    const plan = goalPlan(g);
+    if (plan.setAsideNow > 0) setAsideItems.push({ goalId: g.id, name: g.name, emoji: g.emoji, amount: plan.setAsideNow });
+  }
+  const setAside = sum(setAsideItems, (x) => x.amount);
+  return {
+    cash, due, dueItems, setAside, setAsideItems,
+    free: round2(cash - due - setAside),
+    next: p.next,
+    hasIncomeThisPeriod: db.txns.some((t) => t.kind === 'income' && t.date >= p.start && t.date <= p.end),
+  };
+}
+
+// Monthly report numbers. Card purchases are spending, but the cash leaves when the card is paid,
+// so `net` subtracts card payments and NOT the card purchases themselves.
+export function monthSummary(key) {
+  const items = db.txns.filter((t) => monthKey(t.date) === key);
+  const expenses = items.filter((t) => t.kind === 'expense');
+  const income = sumBy(items, 'income'), spent = sumBy(items, 'expense'), debtPaid = sumBy(items, 'debt'), saved = sumBy(items, 'goal');
+  const spentOnCards = sum(expenses.filter((t) => t.cardId), (t) => t.amount);
+  const fees = sum(items.filter((t) => t.kind === 'adjust' && t.direction === 'up' && t.reason !== 'correction'), (t) => t.amount);
+  const groups = new Map();
+  for (const t of expenses) {
+    const c = db.categories.find((x) => x.id === t.categoryId);
+    const k = c ? c.id : '';
+    if (!groups.has(k)) groups.set(k, { id: c ? c.id : null, name: c ? c.name : 'Uncategorized', emoji: c ? c.emoji : '❔', value: 0 });
+    groups.get(k).value += t.amount;
+  }
+  const byCategory = [...groups.values()].map((g) => ({ ...g, value: round2(g.value) })).sort((a, b) => b.value - a.value);
+  return { income, spent, spentOnCards, debtPaid, saved, fees, net: round2(income - (spent - spentOnCards) - debtPaid - saved), byCategory, count: items.length };
+}
+
+// Settings changes from the UI (PIN, pay day, preferences) with the same all-or-nothing save.
+export function updateSettings(patch = {}) {
+  return tx(() => Object.assign(db.settings, cleanSettings(defined(patch), {})));
 }

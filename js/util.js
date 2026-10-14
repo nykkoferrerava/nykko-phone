@@ -3,27 +3,42 @@
 const pesoFmt = new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP' });
 const pesoFmt0 = new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP', maximumFractionDigits: 0 });
 
+const MINUS = '\u2212'; // real minus sign, easier to read than a hyphen
+
 export function peso(n, { whole = false } = {}) {
-  const v = Number(n) || 0;
+  const v = Number(n);
+  const cents = Number.isFinite(v) ? Math.round(v * 100) : 0;
+  if (cents === 0) return '₱0';
+  const abs = Math.abs(cents) / 100;
   // Drop the centavos when they're zero so lists stay readable.
-  if (whole || Math.round(v * 100) % 100 === 0) return pesoFmt0.format(v);
-  return pesoFmt.format(v);
+  const s = whole || cents % 100 === 0 ? pesoFmt0.format(abs) : pesoFmt.format(abs);
+  return cents < 0 ? MINUS + s : s;
 }
 
+// Compact amounts for chart axes and tight tiles: ₱500, ₱1.5k, ₱2.5M, ₱500B.
 export function pesoShort(n) {
-  const v = Math.abs(Number(n) || 0);
-  const s = n < 0 ? '-' : '';
-  if (v >= 1e6) return `${s}₱${trim(v / 1e6)}M`;
-  if (v >= 1e3) return `${s}₱${trim(v / 1e3)}k`;
-  return `${s}₱${Math.round(v)}`;
+  const v = Number(n);
+  if (!Number.isFinite(v)) return '₱0';
+  const units = ['', 'k', 'M', 'B'];
+  let x = Math.abs(v), i = 0;
+  // Move up a unit whenever the rounded number would show 4+ digits (999,950 -> ₱1M, not ₱1000k).
+  while (i < units.length - 1 && (i ? shortRound(x) : Math.round(x)) >= 1000) { x /= 1000; i++; }
+  const num = i ? shortRound(x) : Math.round(x);
+  const sign = v < 0 && num !== 0 ? MINUS : '';
+  return `${sign}₱${num.toLocaleString('en-US', { maximumFractionDigits: 1 })}${units[i]}`;
 }
-const trim = (x) => (x >= 100 ? Math.round(x) : Math.round(x * 10) / 10).toString();
+const shortRound = (x) => (x >= 100 ? Math.round(x) : Math.round(x * 10) / 10);
 
-export const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+// "|| 0" also turns -0 into 0 so totals never print as "−₱0".
+export const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100 || 0;
 
+// Strict: "1234", "1,234.50", "₱500", " 500 ". Anything else (letters, signs, exponents) is NaN.
 export function parseAmount(s) {
-  const v = parseFloat(String(s ?? '').replace(/[₱,\s]/g, ''));
-  return Number.isFinite(v) ? round2(v) : 0;
+  if (typeof s === 'number') return Number.isFinite(s) && s >= 0 ? round2(s) : NaN;
+  if (typeof s !== 'string') return NaN;
+  const t = s.replace(/[₱,\s\u00a0]/g, '');
+  if (!/^(\d+(\.\d*)?|\.\d+)$/.test(t)) return NaN;
+  return round2(Number(t));
 }
 
 export function esc(s) {
@@ -89,27 +104,54 @@ export function relDay(iso) {
 export const FREQS = {
   weekly: 'Weekly',
   biweekly: 'Every 2 weeks',
-  semimonthly: 'Twice a month (15th & end)',
+  semimonthly: 'Twice a month',
   monthly: 'Monthly',
   quarterly: 'Every 3 months',
   yearly: 'Yearly',
   once: 'One time',
 };
 
-export function advance(iso, freq, keepDay) {
+// Due days for "twice a month": [first, second], 31 = last day of the month.
+export const DEFAULT_DUE_DAYS = [15, 31];
+function semiDays(y, m, dueDays) {
+  const [a, b] = Array.isArray(dueDays) && dueDays.length === 2 ? dueDays : DEFAULT_DUE_DAYS;
+  const last = lastDayOf(y, m);
+  return [...new Set([Math.min(a, last), Math.min(b, last)])].sort((x, z) => x - z);
+}
+
+// Next occurrence after `iso` on a schedule. keepDay = intended day of month (e.g. 31).
+export function advance(iso, freq, keepDay, dueDays) {
   switch (freq) {
     case 'weekly': return addDays(iso, 7);
     case 'biweekly': return addDays(iso, 14);
     case 'semimonthly': {
-      const d = parseISO(iso);
-      const end = lastDayOf(d.getFullYear(), d.getMonth());
-      if (d.getDate() < 15) { d.setDate(15); return toISO(d); }
-      if (d.getDate() < end) { d.setDate(end); return toISO(d); }
-      return toISO(new Date(d.getFullYear(), d.getMonth() + 1, 15));
+      const d = parseISO(iso), y = d.getFullYear(), m = d.getMonth();
+      const day = semiDays(y, m, dueDays).find((x) => x > d.getDate());
+      if (day) return toISO(new Date(y, m, day));
+      return toISO(new Date(y, m + 1, semiDays(y, m + 1, dueDays)[0]));
     }
     case 'monthly': return addMonths(iso, 1, keepDay);
     case 'quarterly': return addMonths(iso, 3, keepDay);
     case 'yearly': return addMonths(iso, 12, keepDay);
+    default: return null;
+  }
+}
+
+// One step back along a schedule: the exact inverse of advance() for dates on the schedule.
+export function retreat(iso, freq, keepDay, dueDays) {
+  switch (freq) {
+    case 'weekly': return addDays(iso, -7);
+    case 'biweekly': return addDays(iso, -14);
+    case 'semimonthly': {
+      const d = parseISO(iso), y = d.getFullYear(), m = d.getMonth();
+      const day = semiDays(y, m, dueDays).filter((x) => x < d.getDate()).pop();
+      if (day) return toISO(new Date(y, m, day));
+      const prev = semiDays(y, m - 1, dueDays);
+      return toISO(new Date(y, m - 1, prev[prev.length - 1]));
+    }
+    case 'monthly': return addMonths(iso, -1, keepDay);
+    case 'quarterly': return addMonths(iso, -3, keepDay);
+    case 'yearly': return addMonths(iso, -12, keepDay);
     default: return null;
   }
 }
