@@ -96,9 +96,10 @@ export function showOnboarding(step = 1) {
   $('#onb-h')?.focus({ preventScroll: true });
 }
 
-export function finishOnboarding() {
+export async function finishOnboarding() {
   if (!accounts().length) S.saveAccount({ name: 'Cash', kind: 'cash', opening: 0, openingDate: today() });
   setSettings({ onboarded: true });
+  await S.flush();
   $('#onboard').hidden = true;
   $('#onboard').innerHTML = '';
   syncInert();
@@ -111,15 +112,17 @@ export function onboardPin() {
 }
 
 export const ONBOARD_FORMS = {
-  onbPay(form) {
+  async onbPay(form) {
     const f = new FormData(form);
     const payAnchor = String(f.get('payAnchor') || '');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(payAnchor)) throw new FormProblem('Pick the date of your last payday', 'payAnchor');
     setSettings({ payAnchor, payAmount: optMoney(f, 'payAmount', 'paycheck') || 0 });
+    await S.flush();
     showOnboarding(2);
   },
-  onbWallets(form) {
+  async onbWallets(form) {
     saveBalances(form);
+    await S.flush();
     showOnboarding(3);
   },
 };

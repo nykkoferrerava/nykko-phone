@@ -11,7 +11,7 @@ import { pathToFileURL } from 'node:url';
 
 const APP = process.env.PITAKA_DIR ? pathToFileURL(process.env.PITAKA_DIR).href.replace(/\/$/, '') : new URL('..', import.meta.url).href.replace(/\/$/, '');
 
-// ---- environment: store.js only needs localStorage --------------------------------------------
+// ---- environment: store.js gets an in-memory storage adapter; localStorage holds v2's data ----------
 class MemStorage {
   constructor() { this.m = new Map(); }
   getItem(k) { return this.m.has(k) ? this.m.get(k) : null; }
@@ -22,6 +22,9 @@ class MemStorage {
   key(i) { return [...this.m.keys()][i] ?? null; }
 }
 globalThis.localStorage = new MemStorage();
+const ST = await import(`${APP}/js/storage.js`);
+const store = ST.memoryAdapter();
+globalThis.__pitakaAdapter = store;
 
 // Freeze "today" so due/overdue/period logic is deterministic. Local noon avoids any TZ edge.
 mock.timers.enable({ apis: ['Date'], now: new Date(2026, 9, 13, 12).getTime() });
@@ -96,10 +99,14 @@ function simulateCard(balance, ratePct, payment) {
   while (b > 0.004) { b = b * (1 + r) - payment; n++; if (n > 5000) return Infinity; }
   return n;
 }
-// Make localStorage writes fail the way iOS Safari does.
-function failWrites(name = 'QuotaExceededError') {
-  localStorage.setItem = () => { const e = new Error('write failed'); e.name = name; throw e; };
-  return () => { delete localStorage.setItem; };
+// Make storage writes fail the way iOS Safari does.
+const failWrites = (name = 'QuotaExceededError') => store.failWith(name);
+// What is on disk once everything staged has been written.
+async function stored() { await S.flush(); return store.dump(); }
+// A phone that has only v2's data (or nothing) in localStorage, as on the first v3 launch.
+async function v2Phone(raw) {
+  fresh(); await S.flush(); await store.clear(); localStorage.clear();
+  if (raw !== undefined) localStorage.setItem('pitaka.data', raw);
 }
 
 // =================================================================================================
@@ -306,26 +313,28 @@ describe('store: errors and transactional saves (BUG-02)', () => {
     const s = new S.StoreError('x', 'quota');
     assert.ok(s instanceof Error); assert.equal(s.code, 'quota');
   });
-  test('a failed write throws StoreError(quota) and leaves memory exactly as before', () => {
+  test('a failed write rejects flush() with StoreError(quota) and puts memory back exactly', async () => {
     fresh(); const c = card(); spend(100);
+    await S.flush();
     const before = JSON.stringify(S.db);
     const restore = failWrites();
     try {
-      assert.throws(() => spend(150, { cardId: c.id }), (e) => e instanceof S.StoreError && e.code === 'quota' && !!e.message);
+      spend(150, { cardId: c.id });
+      await assert.rejects(S.flush(), (e) => e instanceof S.StoreError && e.code === 'quota' && !!e.message);
       assert.equal(JSON.stringify(S.db), before);
       assert.equal(S.debt(c.id).balance, 10000);
       assert.equal(S.db.txns.length, 1);
     } finally { restore(); }
     spend(150); // works again once storage is back
     assert.equal(S.db.txns.length, 2);
-    assert.equal(JSON.parse(localStorage.getItem('pitaka.data')).txns.length, 2);
+    assert.equal((await stored()).txns.length, 2);
   });
-  test('blocked storage gives StoreError(blocked)', () => {
-    fresh();
+  test('blocked storage gives StoreError(blocked)', async () => {
+    fresh(); await S.flush();
     const restore = failWrites('SecurityError');
-    try { assert.throws(() => spend(150), (e) => e instanceof S.StoreError && e.code === 'blocked'); } finally { restore(); }
+    try { spend(150); await assert.rejects(S.flush(), (e) => e instanceof S.StoreError && e.code === 'blocked'); } finally { restore(); }
   });
-  test('EVERY mutating function rolls back when save() fails', () => {
+  test('EVERY mutating function rolls back when the write fails', async () => {
     fresh(); const c = card(); const l = loan(); const b = bill(); const g = goal(); const t = pay(l, 1000); spend(10, { cardId: c.id });
     const gc = S.saveAccount({ name: 'GCash', kind: 'ewallet', opening: 0 });
     const catId = S.db.categories[0].id;
@@ -340,10 +349,12 @@ describe('store: errors and transactional saves (BUG-02)', () => {
     };
     for (const [name, op] of Object.entries(ops)) {
       setToday('2026-10-13');
+      await S.flush();
       const before = JSON.stringify(S.db);
       const restore = failWrites();
       try {
-        assert.throws(op, (e) => e instanceof S.StoreError, name);
+        op();
+        await assert.rejects(S.flush(), (e) => e instanceof S.StoreError, name);
         assert.equal(JSON.stringify(S.db), before, `${name} left memory half-applied`);
       } finally { restore(); }
     }
@@ -358,85 +369,92 @@ describe('store: errors and transactional saves (BUG-02)', () => {
 
 // =================================================================================================
 describe('store: load, sanitize and migration', () => {
-  test('load() of a fresh phone is ok', () => {
-    fresh();
-    assert.deepEqual(S.load(), { ok: true });
-    assert.equal(S.db.version, 2);
+  test('load() of a fresh phone is ok', async () => {
+    fresh(); await S.flush();
+    assert.deepEqual(await S.load(), { ok: true });
+    assert.equal(S.db.version, 3);
   });
-  test('BUG-03/A10: unreadable data is rescued under its own key and never overwritten', () => {
-    fresh();
+  test('BUG-03/A10: unreadable data is rescued under its own key and never overwritten', async () => {
     const raw = '{"txns":[{"id":"a"';
-    localStorage.setItem('pitaka.data', raw);
+    await v2Phone(raw);
     console.error = () => {};
-    let r; try { r = S.load(); } finally { console.error = quiet; }
+    let r; try { r = await S.load(); } finally { console.error = quiet; }
     assert.equal(r.ok, false); assert.equal(r.reason, 'unreadable');
     assert.match(r.rescuedKey, /^pitaka\.data\.unreadable-\d+$/);
     assert.equal(localStorage.getItem(r.rescuedKey), raw);
     assert.ok(Array.isArray(S.db.txns) && S.db.txns.length === 0, 'continues with blank data');
-    spend(100); // the next save writes the main key, the rescued copy stays
+    console.error = () => {};
+    let again; try { await store.clear(); again = await S.load(); } finally { console.error = quiet; }
+    assert.equal(again.rescuedKey, r.rescuedKey, 'opening again reuses the same copy');
+    spend(100); await S.flush(); // saving goes to the new store; v2's key and the copy stay as they were
     assert.equal(localStorage.getItem(r.rescuedKey), raw);
+    assert.equal(localStorage.getItem('pitaka.data'), raw);
   });
-  test('BUG-03: JSON that is not a Pitaka object ([], null, 42) is rescued too', () => {
+  test('BUG-03: JSON that is not a Pitaka object ([], null, 42) is rescued too', async () => {
     for (const raw of ['[]', 'null', '42', '"hello"']) {
-      fresh(); localStorage.setItem('pitaka.data', raw);
+      await v2Phone(raw);
       console.error = () => {};
-      let r; try { r = S.load(); } finally { console.error = quiet; }
+      let r; try { r = await S.load(); } finally { console.error = quiet; }
       assert.equal(r.reason, 'unreadable', raw); assert.equal(localStorage.getItem(r.rescuedKey), raw);
     }
   });
-  test('blocked storage on load: reason blocked, app keeps working in memory', () => {
-    fresh();
-    localStorage.getItem = () => { const e = new Error('denied'); e.name = 'SecurityError'; throw e; };
+  test('blocked storage on load: reason blocked, app keeps working in memory and says saves fail', async () => {
+    await v2Phone();
+    const denied = () => { const e = new Error('denied'); e.name = 'SecurityError'; throw e; };
+    const read = store.read;
+    store.read = async () => denied();
+    localStorage.getItem = denied; localStorage.setItem = denied;
     let r; console.error = () => {};
-    try { r = S.load(); } finally { delete localStorage.getItem; console.error = quiet; }
+    try { r = await S.load(); } finally { store.read = read; delete localStorage.getItem; delete localStorage.setItem; console.error = quiet; }
     assert.equal(r.ok, false); assert.equal(r.reason, 'blocked');
     assert.ok(Array.isArray(S.db.debts));
+    spend(5);
+    await assert.rejects(S.flush(), (e) => e instanceof S.StoreError && e.code === 'blocked');
+    assert.equal(S.db.txns.length, 0);
+    S.useAdapter(store);
   });
-  test('BUG-04: malformed saved data is normalised so the app cannot brick', () => {
-    fresh();
-    localStorage.setItem('pitaka.data', JSON.stringify({ version: 1, txns: [{ id: 'a', kind: 'expense', amount: 5 }, { id: 'b', kind: 'expense', amount: 5, date: '2026-10-01' }, { id: 'c', kind: 'weird', amount: 1, date: '2026-10-01' }, { id: 'd', kind: 'income', amount: 'NaN', date: '2026-10-01' }, null, 5],
+  test('BUG-04: malformed saved data is normalised so the app cannot brick', async () => {
+    await v2Phone(JSON.stringify({ version: 1, txns: [{ id: 'a', kind: 'expense', amount: 5 }, { id: 'b', kind: 'expense', amount: 5, date: '2026-10-01' }, { id: 'c', kind: 'weird', amount: 1, date: '2026-10-01' }, { id: 'd', kind: 'income', amount: 'NaN', date: '2026-10-01' }, null, 5],
       debts: null, bills: 'x', goals: [{ id: 'g', name: 'G', target: '100', saved: '5' }], categories: {}, debtHistory: null, settings: 'nope' }));
-    assert.equal(S.load().ok, true);
+    assert.equal((await S.load()).ok, true);
     assert.deepEqual(S.db.txns.map((t) => t.id), ['b']);
     assert.deepEqual(S.db.debts, []); assert.deepEqual(S.db.bills, []);
     assert.equal(S.goal('g').target, 100); assert.equal(S.goal('g').saved, 5);
     assert.ok(S.db.categories.length > 0); assert.deepEqual(Object.keys(S.db.debtHistory).length, 1);
     assert.doesNotThrow(() => { S.upcoming('2026-10-22'); S.freeToSpend(); S.monthSummary('2026-10'); S.totalDebt(); });
   });
-  test('BUG-01: entries saved without an id (or with a dangerous id) get a fresh safe id on load', () => {
-    fresh();
-    localStorage.setItem('pitaka.data', JSON.stringify({ version: 1, txns: [{ kind: 'expense', amount: 5, date: '2026-10-01' }, { kind: 'expense', amount: 6, date: '2026-10-01' },
+  test('BUG-01: entries saved without an id (or with a dangerous id) get a fresh safe id on load', async () => {
+    await v2Phone(JSON.stringify({ version: 1, txns: [{ kind: 'expense', amount: 5, date: '2026-10-01' }, { kind: 'expense', amount: 6, date: '2026-10-01' },
       { id: '"><img src=y onerror=alert(1)>', kind: 'expense', amount: 7, date: '2026-10-01', categoryId: '<b>' }], debts: [], categories: [{ id: 'x"><', name: 'Food', emoji: '🍜', limit: 0 }] }));
-    S.load();
+    await S.load();
     assert.equal(S.db.txns.length, 3);
     const ids = S.db.txns.map((t) => t.id);
     assert.equal(new Set(ids).size, 3);
     for (const id of [...ids, ...S.db.categories.map((c) => c.id)]) assert.match(id, /^[\w-]{1,40}$/);
     assert.equal(S.db.txns[2].categoryId, undefined, 'unsafe reference dropped');
   });
-  test('A9: strings coerced, unknown debt type normalised, dates validated', () => {
+  test('A9: strings coerced, unknown debt type normalised, dates validated', async () => {
     fresh();
-    S.replaceAll({ txns: [], debts: [{ id: 'c1', type: 'card', name: 'X', balance: '5000', paymentAmount: '500', nextDue: '2026-10-20' }, { id: 'd1', type: 'gcash-loan', name: 'Y', balance: 100, nextDue: 'tomorrow' }] });
+    await S.replaceAll({ txns: [], debts: [{ id: 'c1', type: 'card', name: 'X', balance: '5000', paymentAmount: '500', nextDue: '2026-10-20' }, { id: 'd1', type: 'gcash-loan', name: 'Y', balance: 100, nextDue: 'tomorrow' }] });
     spend(100, { cardId: 'c1' });
     assert.equal(S.debt('c1').balance, 5100);
     assert.ok(S.DEBT_TYPES[S.debt('d1').type]);
     assert.equal(S.debt('d1').nextDue, null);
     assert.doesNotThrow(() => S.upcoming('2026-10-22'));
   });
-  test('__proto__ keys in a backup do not pollute Object.prototype', () => {
+  test('__proto__ keys in a backup do not pollute Object.prototype', async () => {
     fresh();
-    S.replaceAll(JSON.parse('{"txns":[],"__proto__":{"polluted":1},"settings":{"__proto__":{"polluted":2}},"debts":[{"id":"q","type":"person","name":"Q","balance":1,"__proto__":{"polluted":3}}]}'));
+    await S.replaceAll(JSON.parse('{"txns":[],"__proto__":{"polluted":1},"settings":{"__proto__":{"polluted":2}},"debts":[{"id":"q","type":"person","name":"Q","balance":1,"__proto__":{"polluted":3}}]}'));
     assert.equal(({}).polluted, undefined);
     assert.equal(Object.getPrototypeOf(S.db), Object.prototype);
     S.saveDebt(JSON.parse('{"id":"q","type":"person","name":"Q","balance":1,"__proto__":{"polluted":4}}'));
     assert.equal(({}).polluted, undefined);
-    S.load();
+    await S.load();
     assert.equal(({}).polluted, undefined);
   });
-  test('v1 -> v2 migration: one Cash wallet holding every old cash entry; old payments still revert', () => {
-    fresh();
+  test('v1 -> v2 -> v3 migration: one Cash wallet holding every old cash entry; old payments still revert', async () => {
     const cat = { id: 'food', name: 'Food', emoji: '🍜', limit: 0 };
-    localStorage.setItem('pitaka.data', JSON.stringify({
+    await v2Phone(JSON.stringify({
       version: 1, settings: { onboarded: true, payAnchor: '2026-10-09', payAmount: 20000, pinHash: 'h', pinSalt: 's', lockAfterSec: 60 },
       categories: [cat],
       debts: [{ id: 'L', type: 'loan', name: 'Loan', balance: 11000, original: 12000, paymentAmount: 1000, frequency: 'monthly', totalPayments: 12, paymentsMade: 1, nextDue: '2026-11-30', dueDay: 30, rate: 0, createdAt: '2026-09-01' },
@@ -449,8 +467,8 @@ describe('store: load, sanitize and migration', () => {
       ],
       bills: [], goals: [], debtHistory: { '2026-10-01': 12000 },
     }));
-    assert.equal(S.load().ok, true);
-    assert.equal(S.db.version, 2);
+    assert.equal((await S.load()).ok, true);
+    assert.equal(S.db.version, 3);
     assert.equal(S.db.accounts.length, 1);
     const [a] = S.db.accounts;
     assert.deepEqual({ name: a.name, kind: a.kind, opening: a.opening, openingDate: a.openingDate }, { name: 'Cash', kind: 'cash', opening: 0, openingDate: '2026-10-01' });
@@ -464,61 +482,60 @@ describe('store: load, sanitize and migration', () => {
     S.deleteTxn('t3');
     assert.equal(S.debt('C').balance, 0);
   });
-  test('v1 payments whose debt was deleted by the old app (no debtId) load as orphans and stay editable', () => {
-    fresh();
-    localStorage.setItem('pitaka.data', JSON.stringify({ version: 1, txns: [{ id: 'p', kind: 'debt', amount: 500, date: '2026-10-01', countsInstallment: true, advanceDue: true }, { id: 'g', kind: 'goal', amount: 50, date: '2026-10-01' }], debts: [], goals: [] }));
-    S.load();
+  test('v1 payments whose debt was deleted by the old app (no debtId) load as orphans and stay editable', async () => {
+    await v2Phone(JSON.stringify({ version: 1, txns: [{ id: 'p', kind: 'debt', amount: 500, date: '2026-10-01', countsInstallment: true, advanceDue: true }, { id: 'g', kind: 'goal', amount: 50, date: '2026-10-01' }], debts: [], goals: [] }));
+    await S.load();
     assert.equal(S.db.txns[0].orphan, true); assert.equal(S.db.txns[1].orphan, true);
     const t = S.saveTxn({ id: 'p', kind: 'debt', amount: 500, date: '2026-10-01', note: 'old loan' });
     assert.equal(t.note, 'old loan'); assert.equal(t.orphan, true); assert.ok(!('debtId' in t));
   });
-  test('save/load round trip is lossless', () => {
+  test('save/load round trip is lossless', async () => {
     fresh(); const c = card(); const l = loan(); const b = bill(); const g = goal();
     add({ kind: 'income', amount: 25000 }); pay(l, 2000, 2); payBill(b, 8000, { cardId: c.id }); add({ kind: 'goal', goalId: g.id, amount: 100 });
     S.saveAccount({ name: 'GCash', kind: 'ewallet', opening: 50, openingDate: '2026-10-01' });
     S.db.settings.someUiFlag = true; S.save();
     const snap = clone(S.db);
-    S.load();
+    await S.load();
     assert.deepEqual(clone(S.db), snap);
   });
-  test('load() adds today to the debt history once without overwriting', () => {
+  test('load() adds today to the debt history once without overwriting', async () => {
     fresh(); card(); S.save();
     setToday('2026-10-15');
-    S.load(); assert.equal(S.db.debtHistory['2026-10-15'], 10000);
-    S.db.debtHistory['2026-10-15'] = 1; S.load();
+    await S.load(); assert.equal(S.db.debtHistory['2026-10-15'], 10000);
+    S.db.debtHistory['2026-10-15'] = 1; await S.load();
     assert.equal(S.db.debtHistory['2026-10-15'], 10000);
   });
 });
 
 describe('store: backups', () => {
-  test('replaceAll rejects non-backups with a plain message', () => {
+  test('replaceAll rejects non-backups with a plain message', async () => {
     fresh();
     for (const bad of [null, { debts: [] }, 'x', [], 5, { txns: 'no' }]) {
-      assert.throws(() => S.replaceAll(bad), (e) => e instanceof S.ValidationError && e.message === "This isn't a Pitaka backup file.");
+      await assert.rejects(S.replaceAll(bad), (e) => e instanceof S.ValidationError && e.message === "This isn't a Pitaka backup file.");
     }
   });
-  test('BUG-11: restoring a backup never brings back a PIN', () => {
+  test('BUG-11: restoring a backup never brings back a PIN', async () => {
     fresh();
-    S.replaceAll({ txns: [], settings: { pinHash: 'abc', pinSalt: '1', onboarded: true } });
+    await S.replaceAll({ txns: [], settings: { pinHash: 'abc', pinSalt: '1', onboarded: true } });
     assert.equal(S.db.settings.pinHash, null); assert.equal(S.db.settings.pinSalt, null);
     assert.equal(S.db.settings.onboarded, true);
-    assert.equal(JSON.parse(localStorage.getItem('pitaka.data')).settings.pinHash, null);
+    assert.equal((await stored()).core.settings.pinHash, null);
   });
-  test('BUG-10: a restore too big for storage leaves memory and storage untouched', () => {
-    fresh(); spend(1); const db0 = S.db; const stored = localStorage.getItem('pitaka.data');
+  test('BUG-10: a restore too big for storage leaves memory and storage untouched', async () => {
+    fresh(); spend(1); const before = JSON.stringify(await stored()); const db0 = S.db;
     const restore = failWrites();
     try {
-      assert.throws(() => S.replaceAll({ txns: [{ id: 'x', kind: 'income', amount: 5, date: '2026-10-01' }] }), (e) => e instanceof S.StoreError);
+      await assert.rejects(S.replaceAll({ txns: [{ id: 'x', kind: 'income', amount: 5, date: '2026-10-01' }] }), (e) => e instanceof S.StoreError);
     } finally { restore(); }
     assert.equal(S.db, db0); assert.equal(S.db.txns.length, 1);
-    assert.equal(localStorage.getItem('pitaka.data'), stored);
+    assert.equal(JSON.stringify(store.dump()), before);
   });
-  test('BUG-04: a backup with null/missing collections is normalised', () => {
+  test('BUG-04: a backup with null/missing collections is normalised', async () => {
     fresh();
-    S.replaceAll({ txns: [], debts: null, bills: 'x' });
+    await S.replaceAll({ txns: [], debts: null, bills: 'x' });
     assert.ok(Array.isArray(S.db.debts) && Array.isArray(S.db.bills) && S.db.accounts.length === 1);
   });
-  test('exportBackup -> replaceAll round trip keeps all entries (PIN is not exported)', () => {
+  test('exportBackup -> replaceAll round trip keeps all entries (PIN is not exported)', async () => {
     fresh(); const c = card(); const l = loan(); add({ kind: 'income', amount: 25000 }); pay(l, 1000); spend(50, { cardId: c.id });
     S.db.settings.pinHash = 'secret'; S.db.settings.pinSalt = 'salt';
     const json = S.exportBackup();
@@ -527,7 +544,7 @@ describe('store: backups', () => {
     assert.ok(!data.settings.pinHash, 'PIN hash must not leave the phone');
     const before = clone({ txns: S.db.txns, debts: S.db.debts, accounts: S.db.accounts });
     S.resetAll();
-    S.replaceAll(data);
+    await S.replaceAll(data);
     assert.deepEqual(clone({ txns: S.db.txns, debts: S.db.debts, accounts: S.db.accounts }), before);
   });
   test('backupStatus: nothing to back up on a fresh phone', () => {
@@ -560,13 +577,13 @@ describe('store: backups', () => {
 
 // =================================================================================================
 describe('store: settings', () => {
-  test('updateSettings type-checks known keys and keeps simple UI preferences', () => {
+  test('updateSettings type-checks known keys and keeps simple UI preferences', async () => {
     fresh();
     S.updateSettings({ pinFails: 2, payAnchor: 'nope', onboarded: true, theme: 'dark', __proto__: { polluted: 1 } });
     assert.equal(S.db.settings.pinFails, 2); assert.equal(S.db.settings.payAnchor, '2026-10-09');
     assert.equal(S.db.settings.onboarded, true); assert.equal(S.db.settings.theme, 'dark');
     assert.equal(({}).polluted, undefined);
-    assert.equal(JSON.parse(localStorage.getItem('pitaka.data')).settings.pinFails, 2);
+    assert.equal((await stored()).core.settings.pinFails, 2);
   });
 });
 

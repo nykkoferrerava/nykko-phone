@@ -1,9 +1,10 @@
-// All data lives in this phone's localStorage under one key. Nothing is sent anywhere.
+// All data lives on this phone, in IndexedDB behind a small adapter (js/storage.js). Nothing is sent
+// anywhere: the inbox relay only hands encrypted items *to* the phone (see relay/).
 // No DOM access in this file: it runs unchanged under Node for the logic tests.
 import { uid, today, addDays, daysBetween, advance, retreat, round2, PER_MONTH, parseISO, toISO, monthKey, peso, FREQS, DEFAULT_DUE_DAYS } from './util.js';
+import { defaultAdapter, legacyAdapter, blockedAdapter, readLegacy, rescueLegacy, LEGACY_KEY, MIGRATED_KEY, lsGet, lsSet, lsDel } from './storage.js';
 
-const KEY = 'pitaka.data';
-const VERSION = 2;
+const VERSION = 3;
 const MAX_AMOUNT = 1e9;
 
 // ---------- errors ----------
@@ -15,7 +16,7 @@ export class ValidationError extends Error {
     this.field = field;
   }
 }
-// StoreError: localStorage refused the write. code 'quota' (full) or 'blocked' (private mode / blocked).
+// StoreError: storage refused the write. code 'quota' (full) or 'blocked' (private mode / blocked).
 export class StoreError extends Error {
   constructor(message, code, cause) {
     super(message);
@@ -244,82 +245,394 @@ function blank() {
     bills: [],
     goals: [],
     debtHistory: {},
+    inbox: [],
   };
 }
 
 export let db = blank();
 
 // ---------- saving: every change is all-or-nothing ----------
-let protectRaw = false; // unreadable data could not be copied aside: never write over it
+// A change runs in memory inside tx(). If it throws (a ValidationError, a bug), memory is put back exactly
+// as it was. Otherwise it is staged and written to storage in one atomic batch right after (quick changes
+// share a batch). `await flush()` resolves once everything staged is on disk. If the write fails, memory
+// goes back to what storage holds and flush() rejects with a StoreError, so nothing is ever half saved
+// and memory never disagrees with storage for long.
+//
+// The two big collections (txns, inbox) are written record by record, so years of entries are never
+// rewritten for one change. Code that changes one of their records in place calls touch() first;
+// added() and dropped() record inserts and deletes. Everything else ("core") is small and is compared
+// and written as a whole.
+const BIG = ['txns', 'inbox'];
+const SESSION = uid(); // tells a later launch apart from this one (migration check)
+let adapter = null;
+let meta = { schema: VERSION };
+let seq = 0; // order numbers for big-collection records (their order on disk)
+const ord = { txns: new Map(), inbox: new Map() };
+let trk = null; // inside tx(): before-images of records this change touched, by collection
+const freshStaged = () => ({ core: false, meta: false, rewrite: false, clearSecrets: false, txns: new Set(), inbox: new Set() });
+// Undo info back to what storage holds: the core JSON and before-images of records changed since.
+const freshUndo = (core) => ({ core, txns: new Map(), inbox: new Map(), full: null });
+let staged = freshStaged();
+let undo = freshUndo('');
+let writing = false;
+let scheduled = false;
+let waiters = [];
+let failHandler = null;
+
 function storageError(e) {
+  if (e instanceof StoreError) return e;
   const quota = !!e && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e.code === 22 || e.code === 1014);
   return quota
     ? new StoreError("Couldn't save. This phone's storage for Pitaka is full. Export a backup, then try again.", 'quota', e)
     : new StoreError("Couldn't save. Storage is blocked on this phone (for example in private browsing). Export a backup so nothing is lost.", 'blocked', e);
 }
 
-export function save() {
-  if (protectRaw) throw new StoreError("Couldn't save without overwriting data that could not be read. Export it first.", 'blocked');
-  try {
-    localStorage.setItem(KEY, JSON.stringify(db));
-  } catch (e) {
-    throw storageError(e);
-  }
+function coreOf(d = db) {
+  const o = {};
+  for (const k of Object.keys(d)) if (!BIG.includes(k)) o[k] = d[k];
+  return o;
+}
+const coreJson = () => JSON.stringify(coreOf());
+const plain = (v) => JSON.parse(JSON.stringify(v));
+function restoreCore(json) {
+  const c = JSON.parse(json);
+  for (const k of Object.keys(coreOf())) if (!(k in c)) delete db[k];
+  for (const k of Object.keys(c)) if (!BAD_KEYS.has(k)) db[k] = c[k];
 }
 
-// Runs a change and saves it. If anything throws (a ValidationError or a failed save), memory is put
-// back exactly as it was before the call, then the error is rethrown.
+const image = (coll, rec) => ({ json: JSON.stringify(rec), o: ord[coll].get(rec.id) });
+// Call before changing a record of a big collection in place (or before removing it).
+function touch(coll, rec) {
+  if (trk && rec && !trk[coll].has(rec.id)) trk[coll].set(rec.id, image(coll, rec));
+}
+// Call before removing a record of a big collection. If the same id is added again it goes to the end.
+function dropped(coll, rec) {
+  touch(coll, rec);
+  ord[coll].delete(rec.id);
+}
+// Call after adding a new record to a big collection.
+function added(coll, rec) {
+  if (!ord[coll].has(rec.id)) ord[coll].set(rec.id, ++seq);
+  if (trk && !trk[coll].has(rec.id)) trk[coll].set(rec.id, null);
+}
+// Puts records back to their before-images (null = didn't exist), keeping the on-disk order.
+function putBack(coll, images) {
+  if (!images.size) return;
+  const arr = db[coll];
+  const at = new Map(arr.map((r, i) => [r.id, i]));
+  const gone = new Set();
+  for (const [id, before] of images) {
+    const i = at.get(id);
+    if (before === null) {
+      if (i !== undefined) gone.add(i);
+      ord[coll].delete(id);
+    } else {
+      const rec = JSON.parse(before.json);
+      ord[coll].set(id, before.o ?? ++seq);
+      if (i !== undefined) arr[i] = rec;
+      else arr.push(rec);
+    }
+  }
+  db[coll] = arr.filter((_, i) => !gone.has(i)).sort((a, b) => ord[coll].get(a.id) - ord[coll].get(b.id));
+}
+
 let depth = 0;
 function tx(fn) {
   if (depth) return fn();
-  const before = JSON.stringify(db);
+  const before = coreJson();
+  trk = { txns: new Map(), inbox: new Map() };
   depth++;
   try {
     const out = fn();
-    save();
+    stage(before);
     return out;
   } catch (e) {
-    if (JSON.stringify(db) !== before) db = JSON.parse(before);
+    if (coreJson() !== before) restoreCore(before);
+    for (const k of BIG) putBack(k, trk[k]);
     throw e;
   } finally {
     depth--;
+    trk = null;
   }
 }
 
-// ---------- load / backup ----------
-export function load() {
-  let raw;
+function stage(before) {
+  if (coreJson() !== before) staged.core = true;
+  for (const k of BIG) {
+    for (const [id, img] of trk[k]) {
+      if (!undo[k].has(id)) undo[k].set(id, img);
+      staged[k].add(id);
+    }
+  }
+  if (hasStaged()) schedule();
+}
+const hasStaged = () => staged.core || staged.meta || staged.rewrite || staged.txns.size > 0 || staged.inbox.size > 0;
+function schedule() {
+  if (scheduled) return;
+  scheduled = true;
+  queueMicrotask(() => { scheduled = false; pump(); });
+}
+
+// Builds one atomic write from what is staged, copying the data now (memory may change while it runs).
+function takeBatch() {
+  const s = staged;
+  staged = freshStaged();
+  const ops = {};
+  const imgs = { txns: new Map(), inbox: new Map() };
+  const rec = (k, r) => {
+    const json = JSON.stringify(r);
+    const o = ord[k].get(r.id);
+    imgs[k].set(r.id, { json, o });
+    return { id: r.id, o, v: JSON.parse(json) };
+  };
+  let coreJ = null;
+  if (s.rewrite || s.core) { coreJ = coreJson(); ops.core = JSON.parse(coreJ); }
+  if (s.rewrite || s.meta) ops.meta = plain(meta);
+  if (s.rewrite) {
+    ops.replace = true;
+    if (s.clearSecrets) ops.clearSecrets = true;
+    for (const k of BIG) ops[k] = { put: db[k].map((r) => rec(k, r)), del: [] };
+  } else {
+    for (const k of BIG) {
+      if (!s[k].size) continue;
+      const live = new Map(db[k].map((r) => [r.id, r]));
+      const put = [], del = [];
+      for (const id of s[k]) {
+        const r = live.get(id);
+        if (r) put.push(rec(k, r));
+        else { del.push(id); imgs[k].set(id, null); }
+      }
+      ops[k] = { put, del };
+    }
+  }
+  return { ops, coreJ, imgs, rewrite: s.rewrite };
+}
+
+// The batch is on disk: it is the new "what storage holds" for the records it wrote.
+function settled(b) {
+  if (b.coreJ !== null) undo.core = b.coreJ;
+  if (b.rewrite) undo.full = null;
+  for (const k of BIG) {
+    const ids = b.rewrite ? new Set([...undo[k].keys(), ...b.imgs[k].keys()]) : b.imgs[k].keys();
+    for (const id of ids) {
+      if (staged[k].has(id)) undo[k].set(id, b.imgs[k].get(id) ?? null); // changed again since: undo to this batch
+      else undo[k].delete(id);
+    }
+  }
+}
+
+// The write failed: memory goes back to what storage holds, everyone waiting hears about it.
+function failed(err, first) {
+  if (undo.full) {
+    const f = undo.full;
+    db = f.db;
+    ord.txns = f.ord.txns; ord.inbox = f.ord.inbox; seq = Math.max(seq, f.seq);
+    undo = f.undo;
+  }
+  if (coreJson() !== undo.core) restoreCore(undo.core);
+  for (const k of BIG) putBack(k, undo[k]);
+  staged = freshStaged();
+  undo = freshUndo(coreJson());
+  const all = [...first, ...waiters];
+  waiters = [];
+  for (const w of all) w.reject(err);
+  try { failHandler?.(err); } catch (e) { console.error(e); }
+}
+
+async function pump() {
+  if (writing) return;
+  writing = true;
   try {
-    raw = localStorage.getItem(KEY);
+    while (hasStaged()) {
+      const batch = takeBatch();
+      const ws = waiters;
+      waiters = [];
+      try {
+        await adapter.write(batch.ops);
+      } catch (e) {
+        failed(storageError(e), ws);
+        return;
+      }
+      settled(batch);
+      for (const w of ws) w.resolve();
+    }
+    const ws = waiters;
+    waiters = [];
+    for (const w of ws) w.resolve();
+  } finally {
+    writing = false;
+  }
+}
+
+// Resolves when every change made so far is on disk; rejects with a StoreError if saving failed (memory
+// has then been put back to what is on disk).
+export function flush() {
+  if (!writing && !scheduled && !hasStaged()) return Promise.resolve();
+  if (!adapter) adapter = defaultAdapter();
+  return new Promise((resolve, reject) => waiters.push({ resolve, reject }));
+}
+const settle = () => flush().catch(() => {});
+// Called with the StoreError when a write fails (so the UI can say so even if nobody awaited it).
+export function setStoreFailHandler(fn) { failHandler = fn; }
+
+// Writes everything in memory, for data changed outside tx() (tests, repairs after loading).
+export function save() {
+  if (!adapter) adapter = defaultAdapter();
+  staged.rewrite = true;
+  schedule();
+}
+
+// Tests can point the store at their own adapter.
+export function useAdapter(a) { adapter = a; }
+export const storageInfo = () => ({ kind: adapter?.kind || 'none', migration: meta.migration?.state || null, migratedAt: meta.migration?.at || null });
+// Relay tokens and the private key. Never part of `db`, so never in a backup.
+export const secrets = {
+  get: (k) => (adapter ? adapter.secrets.get(k) : Promise.resolve(undefined)),
+  set: (k, v) => adapter.secrets.set(k, v),
+  del: (k) => adapter.secrets.del(k),
+};
+
+// ---------- load / migration / backup ----------
+// The order of on-disk records, with a number for any record that has none.
+function install(data, ordMap, m) {
+  db = data;
+  meta = m;
+  ord.txns = new Map();
+  ord.inbox = new Map();
+  seq = 0;
+  for (const k of BIG) for (const o of ordMap?.[k]?.values() || []) if (Number.isFinite(o) && o > seq) seq = o;
+  for (const k of BIG) {
+    for (const r of db[k]) {
+      const o = ordMap?.[k]?.get(r.id);
+      ord[k].set(r.id, Number.isFinite(o) ? o : ++seq);
+    }
+  }
+  trk = null;
+  staged = freshStaged();
+  snap(false);
+  undo = freshUndo(coreJson());
+}
+const indexOrder = (data) => Object.fromEntries(BIG.map((k) => [k, new Map((data[k] || []).map((r, i) => [r.id, i + 1]))]));
+function fromSnapshot(snap) {
+  const ordMap = {};
+  const data = { ...(isObj(snap.core) ? snap.core : {}) };
+  for (const k of BIG) {
+    const recs = (Array.isArray(snap[k]) ? snap[k] : []).filter(isObj).sort((a, b) => (a.o || 0) - (b.o || 0));
+    data[k] = recs.map((r) => r.v);
+    ordMap[k] = new Map(recs.map((r) => [r.v?.id, r.o]));
+  }
+  return { data, ordMap };
+}
+const recsOf = (data, k) => data[k].map((v, i) => ({ id: v.id, o: i + 1, v: plain(v) }));
+const fullOps = (data, m) => ({ replace: true, meta: plain(m), core: plain(coreOf(data)), txns: { put: recsOf(data, 'txns') }, inbox: { put: recsOf(data, 'inbox') } });
+// JSON with sorted keys, so two copies of the same data compare equal whatever order fields were set in.
+const stable = (v) => JSON.stringify(v, (k, x) => (isObj(x) ? Object.fromEntries(Object.keys(x).sort().map((key) => [key, x[key]])) : x));
+const sameIds = (a, b) => a.length === b.length && a.every((x, i) => x?.id === b[i].id);
+const canUseLocalStorage = () => { try { const k = 'pitaka.probe'; localStorage.setItem(k, '1'); localStorage.removeItem(k); return true; } catch { return false; } };
+
+// Opens the saved data. The first v3 launch copies v2's localStorage data into IndexedDB, reads it back
+// and compares; v2's key is left untouched until a later launch finds the copy intact. If IndexedDB
+// can't be used, Pitaka keeps working from v2's key (in v2's format).
+// Returns { ok: true, migrated?, verified?, reverted?, lost?, fallback? } or { ok: false, reason, rescuedKey? }.
+export async function load() {
+  await settle();
+  if (!adapter) adapter = defaultAdapter();
+  if (adapter.kind === 'localstorage') return loadLegacyMode();
+  let snapIn;
+  try {
+    snapIn = await adapter.read();
   } catch (e) {
-    console.error('Storage is blocked', e);
-    db = blank();
-    snap(false);
+    console.error('Storage could not be opened', e);
+    if (!canUseLocalStorage()) {
+      adapter = blockedAdapter();
+      install(blank(), null, { schema: VERSION });
+      return { ok: false, reason: 'blocked' };
+    }
+    adapter = legacyAdapter();
+    return { ...(await loadLegacyMode()), fallback: true };
+  }
+  if (snapIn) return fromStore(snapIn);
+  return migrateOrStart();
+}
+
+async function fromStore(snapIn) {
+  const { data, ordMap } = fromSnapshot(snapIn);
+  const clean = sanitize(data);
+  const repaired = BIG.some((k) => !sameIds(data[k], clean[k])) || stable(coreOf(clean)) !== stable(isObj(snapIn.core) ? snapIn.core : null);
+  install(clean, ordMap, isObj(snapIn.meta) ? snapIn.meta : { schema: VERSION });
+  const out = { ok: true };
+  if (repaired) save();
+  const mig = meta.migration;
+  if (mig?.state === 'copied' && mig.session !== SESSION) {
+    // A later launch found the IndexedDB copy: the migration is verified and v2's key can go.
+    meta.migration = { ...mig, state: 'verified', verifiedAt: new Date().toISOString() };
+    staged.meta = true;
+    schedule();
+    try {
+      await flush();
+      lsDel(LEGACY_KEY);
+      out.verified = true;
+    } catch (e) {
+      console.error('Could not record the verified migration', e);
+    }
+  }
+  return out;
+}
+
+async function migrateOrStart() {
+  const legacy = readLegacy();
+  if (legacy.state === 'ok') return migrate(legacy);
+  const lost = !!lsGet(MIGRATED_KEY) && legacy.state === 'absent';
+  install(blank(), null, { schema: VERSION, createdAt: new Date().toISOString() });
+  if (legacy.state === 'unreadable') {
+    console.error('Saved data could not be read; a copy was kept');
+    return { ok: false, reason: 'unreadable', rescuedKey: rescueLegacy(legacy.raw) };
+  }
+  return lost ? { ok: true, lost: true } : { ok: true };
+}
+
+async function migrate(legacy) {
+  const data = sanitize(legacy.data);
+  const at = new Date().toISOString();
+  const m = { schema: VERSION, createdAt: at, migration: { from: 'localStorage', at, session: SESSION, state: 'copied', txns: data.txns.length } };
+  const reverted = !!lsGet(MIGRATED_KEY);
+  try {
+    await adapter.write(fullOps(data, m));
+    const back = await adapter.read();
+    const again = back && sanitize(fromSnapshot(back).data);
+    if (!again || stable(again) !== stable(data)) throw Object.assign(new Error('The copy in IndexedDB did not match'), { name: 'VerifyError' });
+  } catch (e) {
+    console.error('Could not move the data to IndexedDB; staying on localStorage', e);
+    try { await adapter.clear(); } catch { /* nothing more to do */ }
+    adapter = legacyAdapter();
+    return { ...(await loadLegacyMode()), fallback: true };
+  }
+  lsSet(MIGRATED_KEY, at);
+  install(data, indexOrder(data), m);
+  return reverted ? { ok: true, migrated: true, reverted: true } : { ok: true, migrated: true };
+}
+
+// Fallback: v2's key is the store. Unreadable data is copied aside first and never written over.
+async function loadLegacyMode() {
+  const legacy = readLegacy();
+  if (legacy.state === 'blocked') {
+    adapter = blockedAdapter();
+    install(blank(), null, { schema: VERSION });
     return { ok: false, reason: 'blocked' };
   }
-  protectRaw = false;
-  if (raw === null || raw === undefined) {
-    db = blank();
-    snap(false);
+  if (legacy.state === 'unreadable') {
+    console.error('Saved data could not be read; a copy was kept');
+    const rescuedKey = rescueLegacy(legacy.raw);
+    if (!rescuedKey) adapter = blockedAdapter(); // no copy could be made: never write over it
+    install(blank(), null, { schema: VERSION });
+    return { ok: false, reason: 'unreadable', rescuedKey };
+  }
+  if (legacy.state === 'absent') {
+    install(blank(), null, { schema: VERSION });
     return { ok: true };
   }
-  let data;
-  try { data = JSON.parse(raw); } catch { data = undefined; }
-  if (!isObj(data)) {
-    console.error('Saved data could not be read; a copy was kept');
-    const rescuedKey = `${KEY}.unreadable-${Date.now()}`;
-    try {
-      localStorage.setItem(rescuedKey, raw);
-    } catch (e) {
-      console.error('Could not keep a copy of the unreadable data', e);
-      protectRaw = true;
-    }
-    db = blank();
-    snap(false);
-    return { ok: false, reason: 'unreadable', rescuedKey: protectRaw ? null : rescuedKey };
-  }
-  db = sanitize(data);
-  snap(false);
+  const data = sanitize(legacy.data);
+  install(data, indexOrder(data), isObj(legacy.data._meta) ? legacy.data._meta : { schema: VERSION });
   return { ok: true };
 }
 
@@ -357,31 +670,44 @@ export function backupStatus() {
   return { due: total > 0 && (age >= 14 || newEntries >= 40), daysSince, newEntries };
 }
 
-export function replaceAll(data) {
+// Restores a backup: written to storage first, so a failure leaves both memory and storage untouched.
+export async function replaceAll(data) {
   if (!isObj(data) || !Array.isArray(data.txns)) fail("This isn't a Pitaka backup file.");
   const next = sanitize(data);
   // Restoring never brings back a PIN: the usual reason to restore is a forgotten PIN.
   Object.assign(next.settings, { pinHash: null, pinSalt: null, pinFails: 0, pinLockUntil: 0 });
+  await settle();
+  if (!adapter) adapter = defaultAdapter();
+  const m = { ...meta, schema: VERSION, restoredAt: new Date().toISOString() };
+  if (m.migration?.state === 'copied') m.migration = { ...m.migration, state: 'replaced' };
   try {
-    localStorage.setItem(KEY, JSON.stringify(next));
+    await adapter.write(fullOps(next, m));
   } catch (e) {
     throw storageError(e);
   }
-  protectRaw = false;
-  db = next;
+  install(next, indexOrder(next), m);
+  if (adapter.kind !== 'localstorage') lsDel(LEGACY_KEY); // the pre-update copy is out of date now
 }
 
+// Erases everything, including the relay pairing. `await flush()` to know it reached the disk.
 export function resetAll() {
-  try {
-    localStorage.removeItem(KEY);
-  } catch (e) {
-    throw storageError(e);
-  }
-  protectRaw = false;
+  if (!adapter) adapter = defaultAdapter();
+  const prev = undo.full || { db, ord: { txns: ord.txns, inbox: ord.inbox }, seq, undo };
+  if (adapter.kind !== 'localstorage') lsDel(LEGACY_KEY);
+  lsDel(MIGRATED_KEY);
   db = blank();
+  meta = { schema: VERSION, createdAt: new Date().toISOString() };
+  ord.txns = new Map();
+  ord.inbox = new Map();
+  undo = freshUndo(coreJson());
+  undo.full = prev;
+  staged = freshStaged();
+  staged.rewrite = true;
+  staged.clearSecrets = true;
+  schedule();
 }
 
-// Repairs anything stored or restored so a bad record can never brick the app. Also migrates v1 -> v2.
+// Repairs anything stored or restored so a bad record can never brick the app. Also migrates v1 -> v2 -> v3.
 function sanitize(data) {
   const base = blank();
   const fixIds = (arr) => {
@@ -402,8 +728,10 @@ function sanitize(data) {
     bills: fixIds(list(data.bills).map((r) => shapeBill(r, false))),
     goals: fixIds(list(data.goals).map((r) => shapeGoal(r, false))),
     debtHistory: {},
+    inbox: [],
   };
   out.txns = fixIds(list(data.txns).map((r) => cleanTxn(r, out)).filter(Boolean));
+  out.inbox = fixIds(list(data.inbox).map(cleanInbox).filter(Boolean));
 
   // v1 had no wallets: everything that was cash goes into one "Cash" wallet from the first entry on.
   if (!out.accounts.length) out.accounts.push(newCashAccount(out.txns.map((t) => t.date).sort()[0] || null));
@@ -478,6 +806,14 @@ function cleanTxn(r, data) {
   }
   t.fx = cleanFx(r.fx) || legacyFx({ ...t, prevDue: r.prevDue, countsInstallment: r.countsInstallment, advanceDue: r.advanceDue }, data);
   return t;
+}
+
+// Inbox items (relay, Files, statements). Shaped fully in js/inbox.js; here only what keeps the app safe.
+function cleanInbox(r) {
+  if (!isId(r.id)) return null;
+  const out = {};
+  for (const k of Object.keys(r)) if (!BAD_KEYS.has(k) && r[k] !== undefined) out[k] = r[k];
+  try { return JSON.parse(JSON.stringify(out)); } catch { return null; }
 }
 
 // ---------- lookups ----------
@@ -667,7 +1003,7 @@ export function deleteDebt(id) {
     if (!d) return;
     db.debts = db.debts.filter((x) => x.id !== id);
     for (const t of db.txns) {
-      if (t.debtId === id || t.cardId === id) { t.orphan = true; t.debtName = d.name; }
+      if (t.debtId === id || t.cardId === id) { touch('txns', t); t.orphan = true; t.debtName = d.name; }
     }
     snap();
   });
@@ -727,7 +1063,7 @@ export function deleteGoal(id) {
     const g = goal(id);
     if (!g) return;
     db.goals = db.goals.filter((x) => x.id !== id);
-    for (const t of db.txns) if (t.goalId === id) { t.orphan = true; t.goalName = g.name; }
+    for (const t of db.txns) if (t.goalId === id) { touch('txns', t); t.orphan = true; t.goalName = g.name; }
   });
 }
 
@@ -1034,9 +1370,13 @@ export function saveTxn(input = {}) {
     let out = t;
     const oldTouched = !!old && touchesDebt(old);
     if (old) {
+      touch('txns', old);
       revert(old);
       out = overwrite(old, t);
-    } else db.txns.push(t);
+    } else {
+      db.txns.push(t);
+      added('txns', t);
+    }
     apply(out);
     if (oldTouched || touchesDebt(out)) snap();
     return out;
@@ -1050,6 +1390,7 @@ export function deleteTxn(id) {
     if (!t) return null;
     const copy = JSON.parse(JSON.stringify(t));
     const touched = touchesDebt(t);
+    dropped('txns', t);
     revert(t);
     db.txns = db.txns.filter((x) => x !== t);
     if (touched) snap();
@@ -1066,6 +1407,7 @@ export function restoreTxn(copy) {
     t.id = isId(c.id) && !db.txns.some((x) => x.id === c.id) ? c.id : uid();
     if (Number.isFinite(c.createdAt)) t.createdAt = c.createdAt;
     db.txns.push(t);
+    added('txns', t);
     apply(t);
     if (touchesDebt(t)) snap();
     return t;

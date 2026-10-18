@@ -121,6 +121,7 @@ export const Lock = {
       const pinHash = await hashPin(pin, pinSalt);
       try {
         setSettings({ pinSalt, pinHash, pinFails: 0, pinLockUntil: 0 });
+        await S.flush();
       } catch (e) {
         this.mode = 'set';
         return this.draw(`PIN not saved. ${errorMessage(e)}`);
@@ -159,9 +160,9 @@ export const Lock = {
     syncInert();
     if (done) onDone?.(); else onCancel?.();
   },
-  forgot() {
+  async forgot() {
     if (!confirm("A forgotten PIN can't be recovered. The only way back in is to erase Pitaka's data on this phone.\n\nIf you saved a backup file, you can restore it afterwards and choose a new PIN (the backup doesn't bring back the old PIN).\n\nErase everything on this phone?")) return;
-    try { S.resetAll(); } catch (e) { alert(errorMessage(e)); return; }
+    try { S.resetAll(); await S.flush(); } catch (e) { alert(errorMessage(e)); return; }
     location.reload();
   },
 };

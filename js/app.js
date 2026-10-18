@@ -26,7 +26,7 @@ async function exportData() {
   const file = new File([json], `pitaka-backup-${today()}.json`, { type: 'application/json' });
   const how = await deliverFile(file);
   if (how === 'cancelled') return;
-  try { S.markBackedUp(); } catch { /* reminder just shows again */ }
+  try { S.markBackedUp(); await S.flush(); } catch { /* reminder just shows again */ }
   clearBanner('save');
   refresh();
   if (isSheetOpen() && $('#persist-status')) settingsSheet();
@@ -40,12 +40,12 @@ async function restoreFile(file) {
   const what = db.txns.length || db.debts.length ? 'everything on this phone' : "Pitaka's data";
   if (!confirm(`Replace ${what} with this backup (${n} entr${n === 1 ? 'y' : 'ies'})?\n\nThe PIN lock will be off afterwards; you can set a new PIN.`)) return;
   try {
-    S.replaceAll(data);
+    await S.replaceAll(data);
   } catch (e) {
     return alert(isValidation(e) ? e.message : isStoreError(e) ? `Couldn't restore. ${storeMessage(e)}` : "Couldn't restore this file. Nothing on this phone was changed.");
   }
   // Restoring means Pitaka was used before: skip the welcome steps (payday can be fixed in Settings).
-  if (!db.settings.onboarded) try { setSettings({ onboarded: true }); } catch { /* onboarding shows again; nothing lost */ }
+  if (!db.settings.onboarded) try { setSettings({ onboarded: true }); await S.flush(); } catch { /* onboarding shows again; nothing lost */ }
   try { sessionStorage.setItem('pitaka.restored', '1'); } catch { /* the offer to set a PIN is skipped */ }
   location.reload();
 }
@@ -120,8 +120,9 @@ const ACTIONS = {
 
   addDebtMenu: () => addDebtMenu(),
   importSheet: () => importSheet(),
-  importSave: ({ ctx }, el) => {
+  importSave: async ({ ctx }, el) => {
     const { added, failed } = importSave(el);
+    await S.flush();
     if (!added) return toast(failed ? 'None of those could be added' : 'Tick at least one debt');
     refresh();
     if (ctx === 'onboard') { if (!failed) showOnboarding(4); toast(`Added ${added} debt${added === 1 ? '' : 's'}`); return; }
@@ -130,9 +131,9 @@ const ACTIONS = {
   },
   debtForm: ({ id }) => debtForm(id ? S.debt(id) : null),
   debtSheet: ({ id }) => debtSheet(S.debt(id)),
-  deleteDebt: ({ id }) => {
+  deleteDebt: async ({ id }) => {
     if (!confirm('Delete this debt? Its payments stay in Activity.')) return;
-    S.deleteDebt(id); closeSheet(); refresh(); toast('Debt deleted');
+    S.deleteDebt(id); await S.flush(); closeSheet(); refresh(); toast('Debt deleted');
   },
   feeForm: ({ id }) => txnForm({ kind: 'adjust', debtId: id, direction: 'up', reason: 'fee' }),
   fixDebt: ({ id }) => fixDebtForm(S.debt(id)),
@@ -149,17 +150,17 @@ const ACTIONS = {
   },
 
   billForm: ({ id }) => billForm(id ? S.bill(id) : null),
-  deleteBill: ({ id }) => { if (confirm('Delete this bill? Payments you logged for it stay in Activity.')) { S.deleteBill(id); closeSheet(); refresh(); toast('Bill deleted'); } },
+  deleteBill: async ({ id }) => { if (confirm('Delete this bill? Payments you logged for it stay in Activity.')) { S.deleteBill(id); await S.flush(); closeSheet(); refresh(); toast('Bill deleted'); } },
 
   goalForm: ({ id }) => goalForm(id ? S.goal(id) : null),
   goalSheet: ({ id }) => goalSheet(S.goal(id)),
   goalMoney: ({ id, w }) => txnForm({ kind: 'goal', goalId: id, withdraw: w ? '1' : '' }),
-  deleteGoal: ({ id }) => { if (confirm('Delete this goal? Its deposits stay in Activity.')) { S.deleteGoal(id); closeSheet(); refresh(); toast('Goal deleted'); } },
+  deleteGoal: async ({ id }) => { if (confirm('Delete this goal? Its deposits stay in Activity.')) { S.deleteGoal(id); await S.flush(); closeSheet(); refresh(); toast('Goal deleted'); } },
 
   catForm: ({ id }) => catForm(id ? db.categories.find((c) => c.id === id) : null),
-  deleteCat: ({ id }) => {
+  deleteCat: async ({ id }) => {
     if (!confirm('Delete this category? Past expenses in it will show as Uncategorized.')) return;
-    S.deleteCategory(id); closeSheet(); refresh();
+    S.deleteCategory(id); await S.flush(); closeSheet(); refresh();
   },
   pickEmoji: ({ e }, el) => {
     const i = $('#sheet [name=emoji]');
@@ -169,9 +170,9 @@ const ACTIONS = {
 
   walletSheet: ({ id }) => walletSheet(id),
   walletForm: ({ id, focus }) => walletForm(id ? S.account(id) : null, { focus }),
-  deleteWallet: ({ id }) => {
+  deleteWallet: async ({ id }) => {
     if (!confirm('Delete this wallet?')) return;
-    S.deleteAccount(id); closeSheet(); refresh(); toast('Wallet deleted');
+    S.deleteAccount(id); await S.flush(); closeSheet(); refresh(); toast('Wallet deleted');
   },
   moveMoney: ({ id }) => txnForm({ kind: 'transfer', accountId: id }),
   balancesForm: () => balancesForm(),
@@ -183,19 +184,21 @@ const ACTIONS = {
   removeWalletRow: (_, el) => removeWalletRow(el),
 
   setPin: () => { closeSheet(); Lock.start('set'); },
-  removePin: () => {
+  removePin: async () => {
     if (!confirm('Turn off the PIN lock?')) return;
     setSettings({ pinHash: null, pinSalt: null, pinFails: 0, pinLockUntil: 0 });
+    await S.flush();
     settingsSheet();
     toast('PIN turned off');
   },
   exportData: () => exportData(),
   importData: () => $('#importFile').click(),
   exportRescued: () => exportRescued(),
-  eraseAll: () => {
+  eraseAll: async () => {
     if (!confirm('Erase ALL data on this phone? This cannot be undone.')) return;
     if (!confirm('Really erase everything? Save a backup first if you might need it.')) return;
     S.resetAll();
+    await S.flush();
     location.reload();
   },
 
@@ -236,7 +239,7 @@ document.addEventListener('click', (e) => {
   }
 });
 
-document.addEventListener('submit', (e) => {
+document.addEventListener('submit', async (e) => {
   const form = e.target.closest('[data-form]');
   if (!form) return;
   e.preventDefault();
@@ -246,7 +249,7 @@ document.addEventListener('submit', (e) => {
   setBusy(form, true);
   clearFormError(form);
   try {
-    fn(form);
+    await fn(form);
     clearBanner('save');
   } catch (err) {
     setBusy(form, false);
@@ -402,14 +405,23 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || LOCAL)) {
 // ============================================================ boot
 ensureEl('banner-slot', 'div', '', $('#main'));
 ensureEl('install', 'section', 'overlay');
+// A write that nobody waited for failed: memory is already back to what is saved; say so.
+S.setStoreFailHandler((err) => { saveFailed(err); refresh(); });
 let loaded;
-try { loaded = S.load(); } catch (e) { console.error(e); loaded = { ok: false, reason: 'unreadable' }; }
+try { loaded = await S.load(); } catch (e) { console.error(e); loaded = { ok: false, reason: 'unreadable' }; }
+if (loaded?.lost) {
+  setBanner('load', { level: 'critical', title: "Pitaka's saved data is gone", text: 'iOS may have cleared it to free up space. Restore your latest backup to get your entries back.', actions: [['Restore backup', 'importData', 'primary']] });
+} else if (loaded?.reverted) {
+  setBanner('load', { level: 'warning', title: 'Pitaka reopened your data from before the update', text: 'The new storage was cleared by iOS, so anything added since the update is missing. Restore a newer backup if you have one.', dismiss: 'OK' });
+} else if (loaded?.fallback) {
+  setBanner('load', { level: 'warning', title: 'Pitaka is using its older storage', text: "This phone wouldn't let Pitaka use its new storage, so it keeps saving the old way (about 5 MB at most). Save backups regularly.", dismiss: 'OK' });
+}
 if (loaded && loaded.ok === false) {
   ui.loadProblem = loaded;
   if (loaded.reason === 'blocked') {
     setBanner('load', { level: 'critical', title: "Pitaka can't save on this phone", text: 'The browser is blocking storage (Private Browsing or "Block All Cookies" in Safari settings can do this). Anything you enter will be lost when you close Pitaka.', dismiss: 'OK' });
   } else {
-    setBanner('load', { level: 'critical', title: "Your saved data couldn't be read", text: loaded.rescuedKey ? 'Pitaka kept the unreadable copy aside on this phone (it was not deleted) and opened empty. Restore your latest backup to get your entries back.' : "Pitaka left it untouched and won't save anything new over it. Restore your latest backup, or save the unreadable copy first.", actions: [['Restore backup', 'importData', 'primary'], ['Save unreadable copy', 'exportRescued']] });
+    setBanner('load', { level: 'critical', title: "Your saved data couldn't be read", text: loaded.rescuedKey ? 'Pitaka kept the unreadable copy aside on this phone (it was not deleted) and opened empty. Restore your latest backup to get your entries back.' : 'Pitaka left it untouched and opened empty. Restore your latest backup, or save the unreadable copy first.', actions: [['Restore backup', 'importData', 'primary'], ['Save unreadable copy', 'exportRescued']] });
   }
 }
 renderBanners();

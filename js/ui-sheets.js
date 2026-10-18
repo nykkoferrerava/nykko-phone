@@ -275,17 +275,18 @@ function remember(out) {
   if (Object.keys(patch).length) try { setSettings(patch); } catch { /* a preference; the entry itself is saved */ }
 }
 
-export function undoSaved(id) {
-  try { S.deleteTxn(id); refresh(); toast('Entry removed'); } catch (e) { toast(errorMessage(e)); }
+export async function undoSaved(id) {
+  try { S.deleteTxn(id); await S.flush(); refresh(); toast('Entry removed'); } catch (e) { refresh(); toast(errorMessage(e)); }
 }
-export function deleteTxn(id) {
+export async function deleteTxn(id) {
   const copy = S.deleteTxn(id);
+  await S.flush();
   closeSheet();
   refresh();
   if (!copy) return toast('That entry was already deleted');
   toast('Deleted', {
     action: 'Undo',
-    onAction: () => { try { S.restoreTxn(copy); refresh(); toast('Entry restored'); } catch (e) { toast(errorMessage(e)); } },
+    onAction: async () => { try { S.restoreTxn(copy); await S.flush(); refresh(); toast('Entry restored'); } catch (e) { refresh(); toast(errorMessage(e)); } },
   });
 }
 
@@ -698,12 +699,13 @@ export function importSave(btn) {
 
 // ================================================================== form handlers
 export const FORMS = {
-  txn(form) {
+  async txn(form) {
     readDraft(form);
     const out = txnOut();
     const isNew = !out.id;
     const saved = S.saveTxn(out);
     remember(out);
+    await S.flush();
     closeSheet();
     refresh();
     const d = out.kind === 'debt' && S.debt(out.debtId);
@@ -711,7 +713,7 @@ export const FORMS = {
     if (isNew && saved?.id) toast(msg, { action: 'Undo', onAction: () => undoSaved(saved.id) });
     else toast(msg);
   },
-  debt(form) {
+  async debt(form) {
     const f = new FormData(form);
     const type = String(f.get('type') || 'loan');
     const sched = ['loan', 'installment', 'lending'].includes(type);
@@ -743,11 +745,12 @@ export const FORMS = {
     if (balance === null) throw new FormProblem(type === 'card' ? 'Enter the current balance' : 'Enter how much is left to pay', 'balance');
     d.balance = balance;
     const saved = S.saveDebt(d);
+    await S.flush();
     refresh();
     debtSheet(saved?.id ? S.debt(saved.id) || saved : S.debt(d.id));
     toast(form.dataset.id ? 'Debt updated' : 'Debt added');
   },
-  fixDebt(form) {
+  async fixDebt(form) {
     const d = S.debt(form.dataset.id);
     if (!d) throw new FormProblem("That debt wasn't found");
     const f = new FormData(form);
@@ -756,11 +759,12 @@ export const FORMS = {
     const delta = round2(target - d.balance);
     if (!delta) { debtSheet(d); return toast('That is already the balance'); }
     S.saveTxn({ kind: 'adjust', debtId: d.id, amount: Math.abs(delta), direction: delta > 0 ? 'up' : 'down', reason: 'correction', date: today(), note: '' });
+    await S.flush();
     refresh();
     debtSheet(S.debt(d.id));
     toast('Balance fixed');
   },
-  bill(form) {
+  async bill(form) {
     const f = new FormData(form);
     const name = str(f, 'name');
     if (!name) throw new FormProblem('Enter a name', 'name');
@@ -769,11 +773,12 @@ export const FORMS = {
     if (b.frequency === 'semimonthly') b.dueDays = readDueDays(f);
     if (form.dataset.id) b.id = form.dataset.id;
     S.saveBill(b);
+    await S.flush();
     closeSheet();
     refresh();
     toast(form.dataset.id ? 'Bill updated' : 'Bill added');
   },
-  goal(form) {
+  async goal(form) {
     const f = new FormData(form);
     const name = str(f, 'name', 40);
     if (!name) throw new FormProblem('Enter a name', 'name');
@@ -781,29 +786,32 @@ export const FORMS = {
     if (form.dataset.id) g.id = form.dataset.id;
     else g.saved = optMoney(f, 'saved', 'amount already saved') || 0;
     S.saveGoal(g);
+    await S.flush();
     closeSheet();
     refresh();
     toast(form.dataset.id ? 'Goal updated' : 'Goal added');
   },
-  cat(form) {
+  async cat(form) {
     const f = new FormData(form);
     const name = str(f, 'name', 40);
     if (!name) throw new FormProblem('Enter a name', 'name');
     const c = { name, emoji: str(f, 'emoji', 8) || '🏷️', limit: optMoney(f, 'limit', 'limit') || 0 };
     if (form.dataset.id) c.id = form.dataset.id;
     S.saveCategory(c);
+    await S.flush();
     closeSheet();
     refresh();
   },
-  settings(form) {
+  async settings(form) {
     const f = new FormData(form);
     const payAnchor = String(f.get('payAnchor') || '');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(payAnchor)) throw new FormProblem('Pick a recent payday', 'payAnchor');
     setSettings({ payAnchor, payAmount: optMoney(f, 'payAmount', 'paycheck') || 0 });
+    await S.flush();
     refresh();
     toast('Payday saved');
   },
-  wallet(form) {
+  async wallet(form) {
     const f = new FormData(form);
     const name = str(f, 'name', 30);
     if (!name) throw new FormProblem('Enter a name', 'name');
@@ -812,18 +820,21 @@ export const FORMS = {
     const a = form.dataset.id && S.account(form.dataset.id);
     if (a) {
       setWalletBalance(a, bal ?? 0, { name, kind });
+      await S.flush();
       refresh();
       walletSheet(a.id);
       toast('Wallet updated');
     } else {
       const saved = S.saveAccount({ name, kind, opening: bal || 0, openingDate: today() });
+      await S.flush();
       refresh();
       if (saved?.id) walletSheet(saved.id); else closeSheet();
       toast('Wallet added');
     }
   },
-  balances(form) {
+  async balances(form) {
     saveBalances(form);
+    await S.flush();
     closeSheet();
     refresh();
     toast('Balances saved');

@@ -52,14 +52,8 @@ export function errorMessage(e) {
   return "Something went wrong, so nothing was changed. Please try again.";
 }
 
-// Settings are plain fields on db.settings; write them all-or-nothing.
-export function setSettings(patch) {
-  if (typeof S.updateSettings === 'function') return S.updateSettings(patch);
-  const before = {};
-  for (const k of Object.keys(patch)) before[k] = db.settings[k];
-  Object.assign(db.settings, patch);
-  try { S.save(); } catch (e) { Object.assign(db.settings, before); throw e; }
-}
+// Settings are plain fields on db.settings; written all-or-nothing (await S.flush() to know they're saved).
+export const setSettings = (patch) => S.updateSettings(patch);
 
 // ------------------------------------------------------------------ toast
 let toastTimer = 0;
