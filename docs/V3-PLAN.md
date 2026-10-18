@@ -7,7 +7,7 @@ no build step, served by GitHub Pages.
 ## Architecture
 
 ```
-Shortcuts (Back Tap, automations) ──POST /in──▶ relay Worker (encrypts, KV, 30-day TTL)
+Shortcuts (Back Tap, automations) ──POST /in──▶ relay Worker (encrypts, D1, 30-day expiry)
                                   └─append──▶ iCloud Drive/Shortcuts/Pitaka/inbox.jsonl (offline copy)
 Pitaka (on open / foreground) ──GET /pull──▶ decrypt ──▶ inbox.js pipeline ──▶ store.js ──▶ IndexedDB
                                                          quickparse / alerts / reconcile
@@ -74,7 +74,7 @@ for all chrome.
   low-confidence, possible duplicate, balance drift, transfer?). Every automatic change can be undone.
 - Teach this format: tap amount / merchant / balance / reference → saved template
   (`You have paid {amount} to {merchant}…`), editable in Settings → Alert formats; part of backups.
-- Relay: Cloudflare Worker + KV (justified in the code), write/read token scopes, constant-time compare,
+- Relay: Cloudflare Worker + D1 (chosen over KV for strong consistency; justified in the code), write/read token scopes, constant-time compare,
   rate limits, ECDH-ES (P-256) + AES-GCM per item, ack-then-delete, 30-day expiry, CORS to the Pages origin.
 - Statement import: vendored pdf.js (lazy, precached), password prompt never stored, CSV, column mapping
   preview reusing the debt-import table, existing rows marked, reconciliation of the closing balance.

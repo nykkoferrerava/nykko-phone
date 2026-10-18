@@ -251,7 +251,7 @@ function shapeGoal(r, strict) {
 function defaultSettings(accountId) {
   return {
     onboarded: false, payAnchor: today(), payAmount: 0, pinHash: null, pinSalt: null, lockAfterSec: 60, rawDays: 90, matchWindow: 30,
-    hideInstallHint: false, lastCategoryId: null, defaultAccountId: accountId,
+    hideInstallHint: false, lastCategoryId: null, defaultAccountId: accountId, relayUrl: null,
     lastBackupAt: null, entriesAtBackup: 0, pinFails: 0, pinLockUntil: 0,
   };
 }
@@ -274,6 +274,9 @@ const SETTINGS_RULES = {
   theme: (v) => (['system', 'light', 'dark'].includes(v) ? v : undefined),
   rawDays: (v) => (Number.isInteger(v) && v >= 0 && v <= 3650 ? v : undefined), // 0 = keep alert text forever
   matchWindow: (v) => (Number.isInteger(v) && v >= 5 && v <= 720 ? v : undefined), // minutes
+  // The relay's address only (its tokens and key are secrets, kept outside db), so a restored backup can
+  // offer to pair with the same relay again.
+  relayUrl: (v) => (v === null || (typeof v === 'string' && /^https?:\/\/[\w.:-]{3,200}(\/[\w./-]*)?$/.test(v)) ? v : undefined),
 };
 // Known settings are type-checked; other simple values (UI preferences) are kept as they are.
 function cleanSettings(s, base) {

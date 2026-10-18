@@ -4,6 +4,7 @@
 import * as S from './store.js';
 import { db } from './store.js';
 import * as X from './inbox.js';
+import * as Sync from './sync.js';
 import * as A from './alerts.js';
 import { esc, peso, fmtDate, today, toISO } from './util.js';
 import {
@@ -246,6 +247,7 @@ export function inboxSettings() {
   const row = (action, title, meta = '', extra = '') => `<button type="button" class="row" data-action="${action}" ${extra}><span class="grow"><span class="title">${title}</span>${meta ? `<span class="meta">${meta}</span>` : ''}</span><span class="chev" aria-hidden="true">${icon('right')}</span></button>`;
   openSheet(`${sheetHead('Inbox and alerts', { back: ['Settings', 'settings'] })}
     <div class="list card">
+      ${row('relaySheet', 'Inbox relay', Sync.paired() ? `Paired with ${esc(Sync.relayHost())}` : 'Not set up', 'data-from="inboxSettings"')}
       ${row('goReview', 'Review', n ? `${n} waiting` : 'Nothing waiting')}
       ${row('importInbox', 'Import from Files', 'Catch up from iCloud Drive/Shortcuts/Pitaka/inbox.jsonl when the relay was offline')}
       ${row('alertFormats', 'Alert formats', t ? `${t} you taught Pitaka` : 'Formats you teach from Review')}

@@ -23,8 +23,10 @@ import { icsForItem, icsForAll, deliverFile } from './ui-ics.js';
 import { applyTheme, initScrollHeader } from './ui-fx.js';
 import { Lock } from './ui-lock.js';
 import { Onboard, needsInstall, showInstall, continueInBrowser, showOnboarding, finishOnboarding, onboardPin, ONBOARD_FORMS } from './ui-onboard.js';
+import * as Sync from './sync.js';
+import { CONNECT_ACTIONS, CONNECT_FORMS, relaySheet, syncNow, showPendingNews, narrowCsp } from './ui-connect.js';
 
-const FORMS = { ...SHEET_FORMS, ...ONBOARD_FORMS, ...MONEY_FORMS, ...REVIEW_FORMS };
+const FORMS = { ...SHEET_FORMS, ...ONBOARD_FORMS, ...MONEY_FORMS, ...REVIEW_FORMS, ...CONNECT_FORMS };
 
 // ============================================================ backup / restore
 async function exportData() {
@@ -88,6 +90,8 @@ function removeWalletRow(el) {
 
 // ============================================================ actions (data-action)
 const ACTIONS = {
+  ...CONNECT_ACTIONS,
+  pullNow: () => syncNow({ manual: true }),
   tab: ({ tab }) => { ui.tab = tab; if (tab === 'reports') { ui.reportMonth = monthKey(today()); ui.reportFollowsNow = true; } render(); },
   closeSheet,
   add: () => txnForm({}),
@@ -510,13 +514,15 @@ document.addEventListener('visibilitychange', () => {
     return;
   }
   const away = Date.now() - Lock.hiddenAt;
-  if (db.settings.pinHash && !Lock.mode && db.settings.onboarded && away > (Number(db.settings.lockAfterSec) || 60) * 1000) Lock.start('unlock');
+  if (db.settings.pinHash && !Lock.mode && db.settings.onboarded && away > (Number(db.settings.lockAfterSec) || 60) * 1000) Lock.start('unlock', { onDone: showPendingNews });
   // The cover only matters for the app-switcher snapshot; the lock screen (if any) now hides the data.
   document.body.classList.remove('privacy');
   if (ui.reportFollowsNow) ui.reportMonth = monthKey(today());
   refresh();
   checkForUpdate();
+  syncNow({ locked: !!Lock.mode });
 });
+window.addEventListener('online', () => syncNow({ locked: !!Lock.mode }));
 window.addEventListener('pagehide', () => { if (db.settings.pinHash) document.body.classList.add('privacy'); });
 
 // ============================================================ service worker (contract §6)
@@ -564,6 +570,8 @@ ensureEl('install', 'section', 'overlay');
 S.setStoreFailHandler((err) => { saveFailed(err); refresh(); });
 let loaded;
 try { loaded = await S.load(); } catch (e) { console.error(e); loaded = { ok: false, reason: 'unreadable' }; }
+// The relay pairing lives in the secrets store; once paired, Pitaka may only connect to that relay.
+if (await Sync.loadPairing()) narrowCsp();
 if (loaded?.lost) {
   setBanner('load', { level: 'critical', title: "Pitaka's saved data is gone", text: 'iOS may have cleared it to free up space. Restore your latest backup to get your entries back.', actions: [['Restore backup', 'importData', 'primary']] });
 } else if (loaded?.reverted) {
@@ -587,13 +595,15 @@ render();
 if (!db.settings.onboarded) {
   if (needsInstall()) showInstall(); else showOnboarding(2);
 }
-if (db.settings.pinHash) Lock.start('unlock');
+if (db.settings.pinHash) Lock.start('unlock', { onDone: showPendingNews });
 syncInert();
 try { navigator.storage?.persist?.(); } catch { /* not supported */ }
 
 let restored = false;
 try { restored = sessionStorage.getItem('pitaka.restored') === '1'; sessionStorage.removeItem('pitaka.restored'); } catch { restored = false; }
-if (restored && db.settings.onboarded && !db.settings.pinHash) restoredSheet();
+if (restored && db.settings.onboarded && !db.settings.pinHash) restoredSheet({ repair: !!db.settings.relayUrl && !Sync.paired() });
+// What the shortcuts sent while Pitaka was closed (announced after unlocking when the PIN is on).
+syncNow({ locked: !!Lock.mode });
 
 // Test hook, only when served from this computer.
 if (LOCAL) window.pitaka = { db: () => db, S, X, ui, render, toISO, parseISO, advance, Lock, Onboard, applyTheme, ACTIONS, announce };

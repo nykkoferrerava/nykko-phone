@@ -1,5 +1,6 @@
 // Bottom sheets: the entry form, detail sheets, edit forms, wallets, settings and the debt import.
 import * as S from './store.js';
+import * as Sync from './sync.js';
 import { db } from './store.js';
 import { peso, esc, parseAmount, today, fmtDate, relDay, FREQS, round2, advance } from './util.js';
 import {
@@ -590,6 +591,7 @@ export function settingsSheet() {
       ${row('walletForm', 'Add a wallet')}</div>
     <h3>Capture</h3>
     <div class="list card">
+      ${row('relaySheet', 'Inbox relay', Sync.paired() ? `Paired with ${esc(Sync.relayHost())}` : 'Not set up · lets your shortcuts reach Pitaka', 'data-from="settings"')}
       ${row('inboxSettings', 'Inbox and alerts', 'Review, Files catch-up, alert formats, card mapping')}
     </div>
     <h3>Money</h3>
@@ -628,10 +630,15 @@ async function checkPersist() {
       : "Storage protection: this browser can't tell. Save backups regularly.";
 }
 
-export function restoredSheet() {
+// `repair`: the backup came from a Pitaka paired with a relay, and this one isn't (backups never carry
+// the relay's tokens or key).
+export function restoredSheet({ repair = false } = {}) {
   openSheet(`${sheetHead('Backup restored', { close: 'Done' })}
     <p class="pad">Your entries are back. The PIN lock is off, because restoring a backup never brings back an old PIN.</p>
-    <div class="actions"><button type="button" class="btn primary" data-action="setPin">${icon('lock')}Set a new PIN</button><button type="button" class="btn" data-action="closeSheet">Not now</button></div>`);
+    <div class="actions"><button type="button" class="btn primary" data-action="setPin">${icon('lock')}Set a new PIN</button><button type="button" class="btn" data-action="closeSheet">Not now</button></div>
+    ${repair ? `<h3>Inbox relay</h3>
+    <p class="pad">This backup was paired with your relay. Backups never include its tokens or key, so pair again to keep collecting from your shortcuts. Paste the write token from one of your shortcuts, and they keep working unchanged.</p>
+    <div class="actions"><button type="button" class="btn tinted" data-action="relaySheet" data-from="restored">${icon('link')}Pair the relay again</button></div>` : ''}`);
 }
 
 // ================================================================== debt import (paste)

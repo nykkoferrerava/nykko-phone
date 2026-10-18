@@ -740,3 +740,7 @@ button.card.row::before { display: none; }
 .tok.on.ref { background: var(--series-2); }
 .mono, .mono-line { font-family: var(--mono); font-size: 0.76rem; }
 .mono-line { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mono-wrap { display: block; font-family: var(--mono); font-size: 0.8rem; line-height: 1.45; word-break: break-all; user-select: all; -webkit-user-select: all; }
+.row-line .btns { display: flex; gap: 8px; flex: none; }
+a.row { color: inherit; text-decoration: none; }
+.row.danger .title, .row.danger .icon .ti { color: var(--critical-text); }

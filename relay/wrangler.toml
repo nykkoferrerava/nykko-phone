@@ -1,0 +1,19 @@
+# Settings for the GitHub Actions deploy (.github/workflows/deploy-relay.yml) and for `wrangler dev`.
+# The workflow fills in database_id and ALLOWED_ORIGIN by itself; see docs/SETUP-RELAY.md.
+name = "pitaka-relay"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+workers_dev = true
+preview_urls = false
+
+# No request logs are kept (the Worker never logs bodies either).
+[observability]
+enabled = false
+
+[[d1_databases]]
+binding = "DB"
+database_name = "pitaka-relay"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[vars]
+ALLOWED_ORIGIN = "https://nykkoferrerava.github.io"
