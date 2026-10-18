@@ -14,6 +14,7 @@ import {
   importSheet, importSave, onImportInput, onImportChange, autoInstallments,
 } from './ui-sheets.js';
 import { icsForItem, icsForAll, deliverFile } from './ui-ics.js';
+import { applyTheme, initScrollHeader } from './ui-fx.js';
 import { Lock } from './ui-lock.js';
 import { Onboard, needsInstall, showInstall, continueInBrowser, showOnboarding, finishOnboarding, onboardPin, ONBOARD_FORMS } from './ui-onboard.js';
 
@@ -85,6 +86,12 @@ const ACTIONS = {
   closeSheet,
   add: () => txnForm({}),
   settings: () => settingsSheet(),
+  setTheme: async ({ theme }) => {
+    const t = applyTheme(theme);
+    setSettings({ theme: t });
+    await S.flush();
+    for (const b of document.querySelectorAll('[data-action="setTheme"]')) b.setAttribute('aria-pressed', String(b.dataset.theme === t));
+  },
   hideHint: () => { setSettings({ hideInstallHint: true }); refresh(); },
   hideSetup: () => { pref.set('setupHidden', '1'); refresh(); },
   goPlan: ({ sub }) => { closeSheet(); ui.tab = 'plan'; ui.planTab = sub; render(); },
@@ -424,6 +431,9 @@ if (loaded && loaded.ok === false) {
     setBanner('load', { level: 'critical', title: "Your saved data couldn't be read", text: loaded.rescuedKey ? 'Pitaka kept the unreadable copy aside on this phone (it was not deleted) and opened empty. Restore your latest backup to get your entries back.' : 'Pitaka left it untouched and opened empty. Restore your latest backup, or save the unreadable copy first.', actions: [['Restore backup', 'importData', 'primary'], ['Save unreadable copy', 'exportRescued']] });
   }
 }
+// The theme is saved with the data (and in backups); boot.js applied the last one before first paint.
+applyTheme(db.settings.theme || 'system');
+initScrollHeader();
 renderBanners();
 render();
 if (!db.settings.onboarded) {
@@ -438,4 +448,4 @@ try { restored = sessionStorage.getItem('pitaka.restored') === '1'; sessionStora
 if (restored && db.settings.onboarded && !db.settings.pinHash) restoredSheet();
 
 // Test hook, only when served from this computer.
-if (LOCAL) window.pitaka = { db: () => db, S, ui, render, toISO, parseISO, advance, Lock, Onboard };
+if (LOCAL) window.pitaka = { db: () => db, S, ui, render, toISO, parseISO, advance, Lock, Onboard, applyTheme, ACTIONS };

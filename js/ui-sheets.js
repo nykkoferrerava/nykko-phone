@@ -4,7 +4,7 @@ import { db } from './store.js';
 import { peso, esc, parseAmount, today, fmtDate, relDay, FREQS, round2, advance } from './util.js';
 import {
   $, pw, icon, accounts, openSheet, closeSheet, sheetHead, saveLink, field, staticField, money, moneyValue, select, freqSelect,
-  sizeAmount, toast, bar, FormProblem, str, optMoney, reqMoney, intField, setSettings, errorMessage, isValidation,
+  sizeAmount, toast, bar, FormProblem, str, optMoney, reqMoney, intField, setSettings, errorMessage, isValidation, haptic,
 } from './ui-core.js';
 import {
   refresh, txnRow, byDateDesc, schedPay, minDue, debtTypeOf, debtName, statusChip, goalPlanText,
@@ -281,6 +281,7 @@ export async function undoSaved(id) {
 export async function deleteTxn(id) {
   const copy = S.deleteTxn(id);
   await S.flush();
+  haptic();
   closeSheet();
   refresh();
   if (!copy) return toast('That entry was already deleted');
@@ -539,7 +540,10 @@ export function settingsSheet() {
   try { bs = S.backupStatus() || bs; } catch { /* older store */ }
   const last = s.lastBackupAt ? `Last backup ${bs.daysSince === 0 ? 'today' : bs.daysSince === 1 ? 'yesterday' : `${bs.daysSince} days ago`}.` : 'No backup saved yet.';
   const row = (action, title, meta = '', extra = '') => `<button type="button" class="row" data-action="${action}" ${extra}><span class="grow"><span class="title">${title}</span>${meta ? `<span class="meta">${meta}</span>` : ''}</span><span class="chev" aria-hidden="true">${icon('right')}</span></button>`;
+  const theme = s.theme || 'system';
   openSheet(`${sheetHead('Settings', { close: 'Done' })}
+    <h3>Appearance</h3>
+    <div class="segmented" role="group" aria-label="Theme">${[['system', 'contrast', 'System'], ['light', 'sun', 'Light'], ['dark', 'moon', 'Dark']].map(([k, ic, l]) => `<button type="button" data-action="setTheme" data-theme="${k}" aria-pressed="${theme === k}">${icon(ic)}${l}</button>`).join('')}</div>
     <h3>Payday</h3>
     <form id="settings-form" data-form="settings" novalidate>
       ${field('A recent payday', `<input type="date" name="payAnchor" value="${esc(s.payAnchor || today())}" required>`, 'You get paid every 2 weeks, counting from this date.')}
@@ -708,10 +712,11 @@ export const FORMS = {
     await S.flush();
     closeSheet();
     refresh();
+    haptic();
     const d = out.kind === 'debt' && S.debt(out.debtId);
     const msg = d && d.balance <= 0 ? `${d.name} is paid off!` : isNew ? 'Saved' : 'Changes saved';
-    if (isNew && saved?.id) toast(msg, { action: 'Undo', onAction: () => undoSaved(saved.id) });
-    else toast(msg);
+    if (isNew && saved?.id) toast(msg, { icon: 'check', action: 'Undo', onAction: () => undoSaved(saved.id) });
+    else toast(msg, { icon: 'check' });
   },
   async debt(form) {
     const f = new FormData(form);

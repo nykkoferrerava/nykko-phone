@@ -3,33 +3,39 @@ import * as S from './store.js';
 import { db } from './store.js';
 import { peso, esc, today, daysBetween, fmtDate, relDay, monthKey, monthLabel, shiftMonth, FREQS, round2, addDays, PER_MONTH } from './util.js';
 import { categoryBars, incomeVsSpending, debtLine, mountCharts, resetCharts } from './charts.js';
-import { $, $$, ui, pw, icon, pref, header, bar, accounts, isStandalone, bannerHtml } from './ui-core.js';
+import { $, $$, ui, pw, icon, pref, header, bar, accounts, isStandalone, bannerHtml, renderTopbar, barBtn, emptyState, bigMoney, countFormat } from './ui-core.js';
+import { runCountUps, syncScrolled } from './ui-fx.js';
 
 export const byDateDesc = (a, b) => String(b.date).localeCompare(String(a.date)) || (b.createdAt || 0) - (a.createdAt || 0);
 
+// keepScroll: a refresh of the same screen (no entrance animation, scroll position kept).
 export function render({ keepScroll = false } = {}) {
   resetCharts();
   const y = window.scrollY;
   const main = $('#main');
   try {
-    main.innerHTML = VIEWS[ui.tab]();
+    main.innerHTML = `<div class="${keepScroll ? 'view-static' : 'view'}">${VIEWS[ui.tab]()}</div>`;
     mountCharts(main);
   } catch (e) {
     console.error(e);
     main.innerHTML = `${header('Pitaka', settingsBtn())}<div class="card"><p>Something went wrong showing this screen. Your data is still saved on this phone.</p>
       <div class="actions"><button class="btn" data-action="exportData">Save backup</button><button class="btn" data-action="tab" data-tab="home">Go to Home</button></div></div>`;
   }
-  const active = ui.tab === 'activity' ? 'home' : ui.tab;
+  renderTopbar();
+  runCountUps(main, countFormat);
+  const active = ['activity', 'review'].includes(ui.tab) ? 'home' : ui.tab;
   for (const b of $$('.tabbar [data-tab]')) {
     const on = b.dataset.tab === active;
     b.classList.toggle('active', on);
     if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
   }
   window.scrollTo(0, keepScroll ? y : 0);
+  syncScrolled();
 }
 export const refresh = () => render({ keepScroll: true });
 
-const settingsBtn = () => `<button class="icon-btn" data-action="settings" aria-label="Settings">${icon('settings')}</button>`;
+const settingsBtn = () => barBtn('settings', 'settings', 'Settings');
+const backBtn = (label = 'Home') => `<button type="button" class="bar-btn text" data-action="tab" data-tab="home" aria-label="Back to ${esc(label)}">${icon('left')}${esc(label)}</button>`;
 
 // ------------------------------------------------------------------ shared pieces
 export const minDue = (d) => Number(d.minDue ?? d.paymentAmount) || 0;
@@ -197,28 +203,30 @@ function setupCard(st) {
     : `<li class="row" role="button" tabindex="0" data-action="${i.action}" ${i.extra || ''}><span class="icon" aria-hidden="true">${icon('plus')}</span><span class="grow"><span class="title">${i.label}</span><span class="meta">${i.sub}</span></span><span class="chev" aria-hidden="true">${icon('right')}</span></li>`)).join('')}</ul></section>`;
 }
 
-function heroCard(fs, hasMoney) {
+function heroCard(fs, hasMoney, payday) {
+  const when = `<span class="pill">${icon('calendar')}${esc(payday)}</span>`;
   if (!hasMoney) {
-    return `<section class="card hero"><p class="label">Free to spend until payday</p><p class="big num" aria-label="Not known yet">—</p>
+    return `<section class="hero spend" aria-label="Free to spend until payday"><div class="hero-top"><p class="label">Free to spend until payday</p>${when}</div>
+      <p class="big num" aria-label="Not known yet">—</p>
       <p class="meta">Log your paycheck or enter what's in your wallets, and Pitaka shows what you can spend until payday.</p>
       <div class="actions"><button class="btn primary" data-action="logPaycheck">Log paycheck</button><button class="btn" data-action="balancesForm">Enter balances</button></div></section>`;
   }
   const short = fs.free < 0;
-  const cols = [['In your wallets', fs.cash], ['Due before payday', fs.due]];
-  if (fs.setAside > 0) cols.push(['Set aside for goals', fs.setAside]);
-  return `<section class="card hero">
-    <p class="label">${short ? 'Short before payday' : 'Free to spend until payday'}</p>
-    <p class="big num${short ? ' short' : ''}">${pw(Math.abs(fs.free))}</p>
+  const cols = [['In wallets', fs.cash], ['Due', fs.due]];
+  if (fs.setAside > 0) cols.push(['Set aside', fs.setAside]);
+  return `<section class="hero spend${short ? ' short' : ''}" aria-label="${short ? 'Short before payday' : 'Free to spend until payday'}">
+    <div class="hero-top"><p class="label">${short ? 'Short before payday' : 'Free to spend until payday'}</p>${when}</div>
+    <p class="big num" aria-live="polite">${short ? '<span class="cur">−</span>' : ''}${bigMoney(fs.free, 'free')}</p>
     ${short ? `<p class="meta">What's due before payday is more than what's in your wallets.</p>` : ''}
-    ${fs.hasIncomeThisPeriod ? '' : `<button class="btn primary" data-action="logPaycheck">Log paycheck${db.settings.payAmount ? ` · ${pw(db.settings.payAmount)}` : ''}</button>`}
-    <div class="split"${cols.length === 3 ? ' style="grid-template-columns:repeat(3,minmax(0,1fr))"' : ''}>${cols.map(([l, v]) => `<div><span class="label">${l}</span><span class="num">${pw(v)}</span></div>`).join('')}</div>
+    ${fs.hasIncomeThisPeriod ? '' : `<button class="btn primary" data-action="logPaycheck">${icon('plus')}Log paycheck${db.settings.payAmount ? ` · ${pw(db.settings.payAmount)}` : ''}</button>`}
+    <div class="split${cols.length === 3 ? ' three' : ''}">${cols.map(([l, v]) => `<div><span class="label">${l}</span><span class="num">${pw(v)}</span></div>`).join('')}</div>
   </section>`;
 }
 
 function walletsRow() {
   const list = accounts();
   if (!list.length) return '';
-  return `<div class="wallets" aria-label="Wallets">${list.map((a) => `<button class="wallet${S.accountBalance(a.id) < 0 ? ' neg' : ''}" data-action="walletSheet" data-id="${esc(a.id)}"><span class="label">${esc(a.name)}</span><span class="num">${esc(peso(S.accountBalance(a.id)))}</span></button>`).join('')}
+  return `<div class="wallets" aria-label="Wallets">${list.map((a) => { const b = S.accountBalance(a.id); return `<button class="wallet${b < 0 ? ' neg' : ''}" data-kind="${esc(a.kind)}" data-action="walletSheet" data-id="${esc(a.id)}"><span class="label"><i aria-hidden="true"></i>${esc(a.name)}</span><span class="num">${esc(peso(b))}</span></button>`; }).join('')}
     <button class="wallet add" data-action="walletForm">${icon('plus')}Add wallet</button></div>`;
 }
 
@@ -251,10 +259,10 @@ export const VIEWS = {
     ].filter(Boolean);
     const showHint = !isStandalone() && !db.settings.hideInstallHint;
 
-    return `${header('Pitaka', settingsBtn(),
-      `${esc(fmtDate(p.start))} – ${esc(fmtDate(p.end))} <span class="nowrap">· payday ${toPayday <= 1 ? (toPayday === 1 ? 'tomorrow' : 'today') : `in ${toPayday} days`}</span>`)}
+    const paydayText = toPayday === 1 ? 'Payday tomorrow' : `${fmtDate(p.next, { weekday: 'short', month: 'short', day: 'numeric' })} · ${toPayday} days`;
+    return `${header('Pitaka', settingsBtn(), `<span>${esc(fmtDate(p.start))} – ${esc(fmtDate(p.end))}</span>`)}
     ${backupBanner()}
-    ${heroCard(fs, hasMoney)}
+    ${heroCard(fs, hasMoney, paydayText)}
     ${walletsRow()}
     ${tiles.length ? `<div class="tiles">${tiles.join('')}</div>` : ''}
     ${setup.show ? setupCard(setup) : ''}
@@ -274,7 +282,7 @@ export const VIEWS = {
 
     <section>
       <h2>Recent ${recent.length ? '<button class="link" data-action="tab" data-tab="activity">See all</button>' : ''}</h2>
-      ${recent.length ? `<ul class="list card">${recent.map((t) => txnRow(t)).join('')}</ul>` : `<p class="empty card">Tap ＋ to log your first expense.</p>`}
+      ${recent.length ? `<ul class="list card">${recent.map((t) => txnRow(t)).join('')}</ul>` : emptyState({ icon: 'receipt', title: 'No entries yet', text: 'Tap + to log your first expense. It takes a few seconds.', actions: [['Add an expense', 'add', 'primary']] })}
     </section>
 
     ${showHint ? `<section><p class="card hint meta"><b>Pitaka is open in the browser.</b> What you add here stays in this browser and won't show up in the Home Screen app. To install: save a backup, then in Safari tap Share → Add to Home Screen, open Pitaka from your Home Screen and restore the backup there.
@@ -283,8 +291,8 @@ export const VIEWS = {
 
   activity() {
     const chips = [['all', 'All'], ['expense', 'Expenses'], ['income', 'Income'], ['debt', 'Debts'], ['goal', 'Savings'], ['transfer', 'Transfers']];
-    return `${header('Activity', `<button class="icon-btn" data-action="tab" data-tab="home" aria-label="Back to Home">${icon('x')}</button>`)}
-      <input class="search" type="search" placeholder="Search" aria-label="Search entries" value="${esc(ui.search)}" data-input="search" autocomplete="off">
+    return `${header('Activity', '', '', { left: backBtn() })}
+      <div class="search-wrap">${icon('search')}<input class="search" type="search" placeholder="Search" aria-label="Search entries" value="${esc(ui.search)}" data-input="search" autocomplete="off"></div>
       <div class="chips scroll">${chips.map(([k, l]) => `<button class="chip-btn ${ui.filter === k ? 'on' : ''}" aria-pressed="${ui.filter === k}" data-action="filter" data-f="${k}">${l}</button>`).join('')}</div>
       <div id="act-list">${activityList()}</div>`;
   },
@@ -298,15 +306,12 @@ export const VIEWS = {
     const add = `<button class="btn primary small" data-action="addDebtMenu">${icon('plus')}Add</button>`;
     if (!db.debts.length) {
       return `${header('Debts')}
-        <section class="card center"><p class="big">No debts</p>
-          <p class="meta">Add your credit cards, loans, installments, lending apps and money you owe people. Already tracking them in a spreadsheet? Paste them in.</p>
-          <button class="btn primary block" data-action="importSheet">${icon('upload')}Paste from a spreadsheet</button>
-          <button class="btn block" data-action="debtForm">Add one by one</button></section>`;
+        ${emptyState({ icon: 'card', title: 'No debts yet', text: 'Add your credit cards, loans, installments, lending apps and money you owe people. Already tracking them in a spreadsheet? Paste them in.', actions: [['Paste from a spreadsheet', 'importSheet', 'primary'], ['Add one by one', 'debtForm']] })}`;
     }
     return `${header('Debts', add)}
       <section class="card hero">
         <p class="label">Total you owe</p>
-        <p class="big num">${active.length ? pw(S.totalDebt()) : 'No debts'}</p>
+        <p class="big num">${active.length ? bigMoney(S.totalDebt(), 'debt') : 'All paid'}</p>
         <div class="split">
           <div><span class="label">Monthly payments</span><span class="num">${pw(S.monthlyObligations())}</span></div>
           <div><span class="label">Debt-free by</span><span class="num">${freeBy ? esc(fmtDate(freeBy, { month: 'short', year: 'numeric' })) : active.length ? '—' : 'Now'}</span></div>
@@ -339,7 +344,7 @@ export const VIEWS = {
     const hist = Object.entries(db.debtHistory || {}).sort(([a], [b]) => a.localeCompare(b)).filter(([d]) => d >= addDays(today(), -365)).map(([date, value]) => ({ date, value }));
     const charts = `${months.some((x) => x.income || x.spent) ? `<section><h2>Income vs spending</h2><div class="card">${incomeVsSpending(months)}</div></section>` : ''}
       ${hist.length > 1 ? `<section><h2>Total debt over time</h2><div class="card">${debtLine(hist)}</div></section>` : ''}`;
-    if (!sum.count) return `${nav}<p class="empty card">No entries in ${esc(monthLabel(m, true))}.</p>${charts}`;
+    if (!sum.count) return `${nav}${emptyState({ icon: 'chart', title: `Nothing in ${monthLabel(m, true)}`, text: 'Reports fill in as you log income, spending, debt payments and savings.' })}${charts}`;
     const top = db.txns.filter((t) => t.kind === 'expense' && monthKey(t.date) === m).sort((a, b) => b.amount - a.amount).slice(0, 5);
     return `${nav}
       <div class="tiles four">
@@ -373,8 +378,9 @@ export function activityList() {
 
 const PLAN = {
   goals() {
+    if (!db.goals.length) return emptyState({ icon: 'target', title: 'Save for something', text: 'A trip, a gadget or an emergency fund: add a goal and Pitaka tells you how much to put aside every payday.', actions: [['New savings goal', 'goalForm', 'primary']] });
     return `<button class="btn primary block" data-action="goalForm">${icon('plus')}New savings goal</button>
-      ${db.goals.length ? `<ul class="list card">${db.goals.map(goalRow).join('')}</ul>` : `<p class="empty card">Saving for a vacation, a gadget or an emergency fund? Add a goal and Pitaka tells you how much to put aside every payday.</p>`}`;
+      <ul class="list card">${db.goals.map(goalRow).join('')}</ul>`;
   },
   bills() {
     const bills = [...db.bills].sort((a, b) => (a.done - b.done) || (a.nextDue || '9').localeCompare(b.nextDue || '9'));
@@ -389,7 +395,7 @@ const PLAN = {
           <span class="meta ${late ? 'critical-text' : ''}">${esc(when)} · ${esc(FREQS[b.frequency] || '')}</span></span>
           <span class="col-end"><span class="num">${esc(peso(b.amount))}</span>${b.done ? '' : `<button class="btn small" data-action="payItem" data-kind="bill" data-id="${esc(b.id)}" aria-label="Pay ${esc(b.name)}">Pay</button>`}</span>
         </li>`;
-      }).join('')}</ul>` : `<p class="empty card">Add rent, electricity, water, internet, phone plan, subscriptions… They show up on Home when they're due before your next payday.</p>`}`;
+      }).join('')}</ul>` : emptyState({ icon: 'repeat', title: 'No bills yet', text: "Add rent, Meralco, water, internet, your phone plan and subscriptions. They show up on Home when they're due before payday." })}`;
   },
   budgets() {
     const p = S.period();

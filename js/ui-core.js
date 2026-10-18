@@ -2,6 +2,9 @@
 import * as S from './store.js';
 import { db } from './store.js';
 import { peso, esc, monthKey, today, FREQS, parseAmount } from './util.js';
+import { sheetDrag, haptic } from './ui-fx.js';
+
+export { haptic };
 
 export const $ = (s, r = document) => r.querySelector(s);
 export const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -56,15 +59,20 @@ export function errorMessage(e) {
 export const setSettings = (patch) => S.updateSettings(patch);
 
 // ------------------------------------------------------------------ toast
+// toast('Saved', { sub: 'Food is ₱120 over budget', warn: true, icon: 'check', action: 'Undo', onAction })
 let toastTimer = 0;
 let toastFn = null;
-export function toast(msg, { action = '', onAction = null, ms = 0 } = {}) {
+export function toast(msg, { action = '', onAction = null, ms = 0, sub = '', warn = false, icon: ic = '' } = {}) {
   const t = $('#toast');
   clearTimeout(toastTimer);
   toastFn = onAction;
-  t.innerHTML = `<span>${esc(msg)}</span>${action && onAction ? ` <button type="button" class="toast-action">${esc(action)}</button>` : ''}`;
+  t.innerHTML = `${ic ? icon(ic) : ''}<span class="t-body"><span>${esc(msg)}</span>${sub ? `<span class="t-sub${warn ? ' warn' : ''}">${esc(sub)}</span>` : ''}</span>${action && onAction ? `<button type="button" class="toast-action">${esc(action)}</button>` : ''}`;
   t.hidden = false;
-  toastTimer = setTimeout(hideToast, ms || (onAction ? 5000 : 2600));
+  // restart the entrance animation for back-to-back toasts
+  t.style.animation = 'none';
+  void t.offsetWidth;
+  t.style.animation = '';
+  toastTimer = setTimeout(hideToast, ms || (onAction ? 6000 : sub ? 4200 : 2600));
 }
 export function hideToast() { $('#toast').hidden = true; toastFn = null; }
 export function runToastAction() { const fn = toastFn; hideToast(); if (fn) fn(); }
@@ -95,7 +103,7 @@ export function syncInert() {
   const lock = isLockOpen();
   const overlay = isOverlayOpen();
   const bg = lock || overlay || isSheetOpen();
-  for (const el of [$('#main'), $('.tabbar'), $('#banner-slot')]) if (el) el.inert = bg;
+  for (const el of [$('#main'), $('.tabbar'), $('#banner-slot'), $('#topbar')]) if (el) el.inert = bg;
   const sh = $('#sheet');
   if (sh && !sheetState.closing) sh.inert = lock || overlay;
   for (const sel of ['#onboard', '#install']) { const el = $(sel); if (el) el.inert = lock; }
@@ -120,13 +128,15 @@ export function openSheet(html) {
     sheetState.sel = ok ? describe(a) : '';
   }
   trigger = null;
-  s.innerHTML = `<div class="sheet-backdrop" data-action="closeSheet"></div><div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="sheet-title" tabindex="-1" style="outline:none"><div class="grabber" aria-hidden="true"></div>${html}</div>`;
+  s.classList.remove('closing');
+  s.innerHTML = `<div class="sheet-backdrop" data-action="closeSheet"></div><div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="sheet-title" tabindex="-1" style="outline:none"><div class="grabber-zone" aria-hidden="true"><div class="grabber"></div></div>${html}</div>`;
   s.hidden = false;
   s.inert = false;
   document.body.classList.add('sheet-open');
   if (!wasOpen) void s.offsetHeight; // let the slide-up transition start from the closed position
   s.classList.add('open');
   syncInert();
+  sheetDrag(s, closeSheet);
   const panel = s.querySelector('.sheet-panel');
   panel.focus({ preventScroll: true });
   return panel;
@@ -137,15 +147,16 @@ export function closeSheet() {
   if (s.hidden) return;
   if (s.contains(document.activeElement)) document.activeElement.blur();
   s.inert = true; // no second tap or Return can reach the form while it slides away
+  s.classList.add('closing');
   s.classList.remove('open');
   document.body.classList.remove('sheet-open');
   clearTimeout(sheetState.closing);
   sheetState.closing = setTimeout(() => {
     sheetState.closing = 0;
-    if (!s.classList.contains('open')) { s.hidden = true; s.innerHTML = ''; }
+    if (!s.classList.contains('open')) { s.hidden = true; s.innerHTML = ''; s.classList.remove('closing'); s.style.removeProperty('--drag'); s.style.removeProperty('--drag-p'); }
     syncInert();
     restoreFocus(); // after the slide-out, so a repeated Return can't re-trigger the opener
-  }, 260);
+  }, 340);
   syncInert();
 }
 
@@ -158,16 +169,40 @@ export function restoreFocus() {
 }
 
 // ------------------------------------------------------------------ markup helpers
-export const header = (title, right = '', sub = '') =>
-  `<header class="top"><div><h1>${title}</h1>${sub ? `<p class="sub">${sub}</p>` : ''}</div><div class="top-actions">${right}</div></header>`;
+// The large title sits at the top of the screen; its buttons live in the fixed top bar, which also
+// shows the title in small once the page scrolls. `title` is trusted markup (escape dynamic parts).
+const topbarState = { title: '', left: '', right: '' };
+export function header(title, right = '', sub = '', { left = '' } = {}) {
+  Object.assign(topbarState, { title, right, left });
+  return `<header class="top"><h1>${title}</h1>${sub ? `<p class="sub">${sub}</p>` : ''}</header>`;
+}
+export function renderTopbar() {
+  const el = $('#topbar');
+  if (!el) return;
+  el.innerHTML = `<div class="bar-left">${topbarState.left}</div><div class="bar-title" aria-hidden="true">${topbarState.title}</div><div class="bar-actions">${topbarState.right}</div>`;
+}
+export const barBtn = (action, ic, label, extra = '', badge = 0) =>
+  `<button type="button" class="bar-btn" data-action="${action}" aria-label="${esc(label)}${badge ? `, ${badge} waiting` : ''}" ${extra}>${icon(ic)}${badge ? `<span class="badge" aria-hidden="true">${badge > 99 ? '99+' : badge}</span>` : ''}</button>`;
+
+// Thoughtful empty state: icon (sprite name or an emoji), title, one line, optional buttons [[label, action, cls, extra]].
+export const emptyState = ({ icon: ic = 'inbox', emoji = '', title, text = '', actions = [] }) =>
+  `<div class="empty-state card"><div class="ill" aria-hidden="true">${emoji ? esc(emoji) : icon(ic)}</div><p class="es-title">${esc(title)}</p>${text ? `<p class="es-text">${esc(text)}</p>` : ''}${actions.length ? `<div class="actions">${actions.map(([l, a, c = '', x = '']) => `<button type="button" class="btn ${c}" data-action="${a}" ${x}>${esc(l)}</button>`).join('')}</div>` : ''}</div>`;
+
+// "₱12,345" for the big numbers, split so the peso sign can be smaller.
+export const bigMoney = (n, key) => {
+  const v = Math.round(Math.abs(Number(n) || 0));
+  return `<span${key ? ` data-count="${esc(key)}" data-to="${v}"` : ''}><span class="cur">₱</span><span class="v">${groupFmt.format(v)}</span></span>`;
+};
+export const countFormat = (x) => groupFmt.format(Math.round(x));
 
 export function bar(pct, cls = '', label = '') {
   const p = Number.isFinite(pct) ? Math.max(0, Math.min(100, pct)) : 0;
   return `<div class="progress ${cls}" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(p)}"${label ? ` aria-label="${esc(label)}"` : ''}><div style="width:${p.toFixed(1)}%"></div></div>`;
 }
 
-export const sheetHead = (title, { right = '', close = 'Cancel' } = {}) =>
-  `<div class="sheet-head"><button type="button" class="link" data-action="closeSheet">${close}</button><h2 id="sheet-title">${title}</h2>${right || '<span></span>'}</div>`;
+// back: [label, action, extra] shows "‹ label" instead of the close link (sub-pages of Settings).
+export const sheetHead = (title, { right = '', close = 'Cancel', back = null } = {}) =>
+  `<div class="sheet-head">${back ? `<button type="button" class="link back" data-action="${back[1]}" ${back[2] || ''}>${icon('left')}${esc(back[0])}</button>` : `<button type="button" class="link" data-action="closeSheet">${close}</button>`}<h2 id="sheet-title">${title}</h2>${right || '<span></span>'}</div>`;
 export const saveLink = (formId, label = 'Save') => `<button class="link" type="submit" form="${formId}">${label}</button>`;
 
 export const field = (label, input, hint = '') =>
