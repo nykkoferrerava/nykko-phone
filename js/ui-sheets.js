@@ -7,11 +7,13 @@ import {
   sizeAmount, toast, bar, FormProblem, str, optMoney, reqMoney, intField, setSettings, errorMessage, isValidation, haptic,
 } from './ui-core.js';
 import {
-  refresh, txnRow, byDateDesc, schedPay, minDue, debtTypeOf, debtName, statusChip, goalPlanText,
+  refresh, txnRow, byDateDesc, schedPay, minDue, debtTypeOf, debtName, statusChip, goalPlanText, personName,
 } from './ui-views.js';
+import { paydayPicker, readPayday } from './ui-money.js';
+import { budgetWarning, budgetWarningText } from './insights.js';
 
 const KINDS = [['expense', 'Expense'], ['income', 'Income'], ['debt', 'Pay debt'], ['goal', 'Savings'], ['transfer', 'Move']];
-const KIND_TITLES = { expense: 'Add expense', income: 'Add income', debt: 'Pay a debt', goal: 'Savings', transfer: 'Move money', adjust: 'Fee or interest' };
+const KIND_TITLES = { expense: 'Add expense', income: 'Add income', debt: 'Pay a debt', goal: 'Savings', transfer: 'Move money', adjust: 'Fee or interest', lend: 'Lend money', collect: 'Got paid back' };
 export const WALLET_KINDS = { cash: 'Cash', ewallet: 'E-wallet', bank: 'Bank account' };
 export const guessWalletKind = (name) => (/cash|pitaka|wallet\b/i.test(name) && !/gcash/i.test(name) ? 'cash'
   : /bank|bdo|bpi|metrobank|landbank|pnb|security|union|rcbc|china|savings|psbank|eastwest|cimb|gotyme|tonik|seabank|maribank/i.test(name) ? 'bank' : 'ewallet');
@@ -71,19 +73,22 @@ function prepKind() {
     if (d && !t.instTouched) t.installments = suggest(d, parseAmount(t.amountText));
   }
   if (t.kind === 'goal' && !t.id && (!t.goalId || !S.goal(t.goalId))) t.goalId = db.goals[0]?.id || '';
+  if (t.kind === 'collect' && !t.id && (!t.receivableId || !S.receivable(t.receivableId))) t.receivableId = (db.receivables || []).find((r) => r.balance > 0)?.id || '';
+  if (t.kind === 'lend' && !t.person && t.receivableId) t.person = S.receivable(t.receivableId)?.name || '';
   if (t.kind === 'transfer') {
     if (!S.account(t.accountId)) t.accountId = defaultAccount();
     if (!t.toAccountId || t.toAccountId === t.accountId) t.toAccountId = accounts().find((a) => a.id !== t.accountId)?.id || '';
   }
 }
 
-function categoryList() {
+// Visible categories, most used first (the one already picked stays even if it was hidden since).
+function categoryList(keep) {
   let ids = [];
   try { ids = S.categoryOrder() || []; } catch { /* fall back to stored order */ }
   const byId = new Map(db.categories.map((c) => [c.id, c]));
   const out = ids.map((id) => byId.get(id)).filter(Boolean);
   for (const c of db.categories) if (!out.includes(c)) out.push(c);
-  return out;
+  return out.filter((c) => !c.hidden || c.id === keep);
 }
 
 function nextDueText(d, n) {
@@ -147,7 +152,7 @@ export function renderTxnForm({ focusAmount = true } = {}) {
   const noteField = field('Note', `<input name="note" value="${esc(t.note || '')}" placeholder="Optional" maxlength="120" autocomplete="off">`);
   const walletSel = (name, label, value) => (accounts().length ? field(label, select(name, walletOptions(), value)) : '');
   if (t.kind === 'expense') {
-    const cats = categoryList();
+    const cats = categoryList(t.categoryId);
     const cards = db.debts.filter((d) => d.type === 'card');
     const payOpts = [{ group: 'Wallets', options: walletOptions() }];
     if (cards.length) payOpts.push({ group: 'Credit cards', options: cards.map((c) => [`c:${c.id}`, c.name]) });
@@ -199,6 +204,26 @@ export function renderTxnForm({ focusAmount = true } = {}) {
       body = `<div class="two">${field('From', select('accountId', walletOptions(), t.accountId))}${field('To', select('toAccountId', walletOptions(), t.toAccountId))}</div>
         ${field('Note', `<input name="note" value="${esc(t.note || '')}" placeholder="e.g. Cash-in, ATM withdrawal" maxlength="120" autocomplete="off">`)}`;
     }
+  } else if (t.kind === 'lend') {
+    const people = [...new Set((db.receivables || []).map((r) => r.name))];
+    body = `${t.id && t.orphan ? staticField('Lent to', esc(t.personName || 'Someone')) : field('Lent to', `<input name="person" required maxlength="60" value="${esc(t.person || (t.id ? personName(t) : ''))}" placeholder="Who?" autocomplete="off" list="people-list"><datalist id="people-list">${people.map((n) => `<option value="${esc(n)}"></option>`).join('')}</datalist>`)}
+      ${walletSel('accountId', 'From wallet', t.accountId)}
+      ${t.id ? '' : field('Pay back by', `<input type="date" name="dueDate" value="${esc(t.dueDate || '')}">`, 'Optional')}
+      ${noteField}`;
+  } else if (t.kind === 'collect') {
+    const open = (db.receivables || []).filter((r) => r.balance > 0 || r.id === t.receivableId);
+    if (!open.length && !(t.id && t.orphan)) {
+      usable = false;
+      body = emptyCta('Nobody owes you money right now.', 'lendForm', 'Record money you lent');
+    } else {
+      body = `${t.id && t.orphan ? staticField('From', esc(t.personName || 'Someone')) : field('Who paid you back?', select('receivableId', open.map((r) => [r.id, `${r.name} · owes ${peso(Math.max(0, r.balance))}`]), t.receivableId))}
+        ${walletSel('accountId', 'Into wallet', t.accountId)}${noteField}`;
+    }
+  } else if (t.kind === 'adjust' && t.accountId && !t.debtId) {
+    body = `${staticField('Wallet', esc(S.account(t.accountId)?.name || 'Deleted wallet'))}<input type="hidden" name="accountId" value="${esc(t.accountId)}">
+      ${field('Effect', select('direction', [['up', 'Raised the balance'], ['down', 'Lowered the balance']], t.direction || 'up'))}
+      ${noteField}
+      <p class="meta pad">A balance fix makes the wallet match its app. It isn't counted as spending or income.</p>`;
   } else if (t.kind === 'adjust') {
     const reasons = t.reason === 'correction' ? [['correction', 'Balance fix']] : [['fee', 'Fee'], ['interest', 'Interest'], ['penalty', 'Late penalty']];
     body = `${staticField('Debt', esc(debtName(t)))}<input type="hidden" name="debtId" value="${esc(t.debtId || '')}">
@@ -206,8 +231,8 @@ export function renderTxnForm({ focusAmount = true } = {}) {
       ${field('Note', `<input name="note" value="${esc(t.note || '')}" placeholder="Optional" maxlength="120" autocomplete="off">`)}
       <p class="meta pad">This changes what you owe. It isn't counted as spending.</p>`;
   }
-  const showKinds = !t.id && t.kind !== 'adjust' && !t.billId;
-  const title = t.id ? (t.kind === 'adjust' ? 'Edit adjustment' : 'Edit entry') : t.billId ? 'Pay bill' : KIND_TITLES[t.kind];
+  const showKinds = !t.id && !['adjust', 'lend', 'collect'].includes(t.kind) && !t.billId;
+  const title = t.id ? (t.kind === 'adjust' ? (t.accountId ? 'Edit balance fix' : 'Edit adjustment') : 'Edit entry') : t.billId ? 'Pay bill' : KIND_TITLES[t.kind];
   const panel = openSheet(`${sheetHead(esc(title), { right: usable ? saveLink('txn-form') : '' })}
     ${showKinds ? `<div class="segmented" role="group" aria-label="Kind of entry">${KINDS.map(([k, l]) => `<button type="button" class="${t.kind === k ? 'on' : ''}" aria-pressed="${t.kind === k}" data-action="txnKind" data-kind="${k}"${k === 'transfer' ? ' aria-label="Move money between wallets"' : ''}>${l}</button>`).join('')}</div>` : ''}
     <form id="txn-form" data-form="txn" autocomplete="off" novalidate>
@@ -226,7 +251,7 @@ export function renderTxnForm({ focusAmount = true } = {}) {
 export function readDraft(form) {
   if (!form || !draft) return;
   const f = new FormData(form);
-  for (const k of ['note', 'date', 'categoryId', 'pay', 'accountId', 'toAccountId', 'debtId', 'goalId', 'withdraw', 'direction', 'reason']) if (f.has(k)) draft[k] = f.get(k);
+  for (const k of ['note', 'date', 'categoryId', 'pay', 'accountId', 'toAccountId', 'debtId', 'goalId', 'withdraw', 'direction', 'reason', 'person', 'receivableId', 'dueDate']) if (f.has(k)) draft[k] = f.get(k);
   if (f.has('amount')) draft.amountText = f.get('amount');
   if (f.has('installments')) draft.installments = parseInt(f.get('installments'), 10) || 0;
 }
@@ -261,7 +286,24 @@ function txnOut() {
       out.accountId = t.accountId; out.toAccountId = t.toAccountId;
       break;
     case 'adjust':
+      if (t.accountId && !t.debtId) { out.accountId = t.accountId; out.direction = t.direction === 'down' ? 'down' : 'up'; out.reason = 'correction'; break; }
       out.debtId = t.debtId; out.direction = t.direction === 'down' ? 'down' : 'up'; out.reason = t.reason || 'fee';
+      break;
+    case 'lend': {
+      out.accountId = t.accountId;
+      if (t.id && t.orphan) break;
+      const name = String(t.person || '').trim();
+      if (!name) throw new FormProblem('Enter who you lent money to', 'person');
+      const r = S.findReceivable(name);
+      if (t.id) {
+        if (!r) throw new FormProblem(`To lend to someone new, add a new entry`, 'person');
+        out.receivableId = r.id;
+      } else { out.name = name; if (t.dueDate) out.dueDate = t.dueDate; }
+      break;
+    }
+    case 'collect':
+      if (!t.receivableId && !(t.id && t.orphan)) throw new FormProblem('Pick who paid you back', 'receivableId');
+      out.receivableId = t.receivableId; out.accountId = t.accountId;
       break;
     default: throw new FormProblem('Pick what kind of entry this is');
   }
@@ -444,17 +486,6 @@ export function goalSheet(g) {
     <div class="actions"><button type="button" class="btn primary" data-action="goalMoney" data-id="${esc(g.id)}">${icon('plus')}Add money</button><button type="button" class="btn" data-action="goalMoney" data-id="${esc(g.id)}" data-w="1">Take out</button></div>
     <h3>History</h3>${deps.length ? `<ul class="list">${deps.map((t) => txnRow(t, { ctx: 'goal' })).join('')}</ul>` : '<p class="empty">Nothing saved yet.</p>'}`);
 }
-export function catForm(c) {
-  const v = c || { emoji: '🏷️', limit: 0 };
-  openSheet(`${sheetHead(c ? 'Edit category' : 'New category', { right: saveLink('cat-form') })}
-    <form id="cat-form" data-form="cat" data-id="${esc(c?.id || '')}" novalidate>
-      <div class="two narrow-first">${field('Icon', `<input name="emoji" value="${esc(v.emoji)}" maxlength="4" autocomplete="off">`)}${field('Name', `<input name="name" required maxlength="40" value="${esc(v.name || '')}" autocomplete="off">`)}</div>
-      ${field('Spending limit', money('limit', v.limit), 'For each 2-week pay period. Leave 0 for no limit.')}
-      <button class="btn primary block" type="submit">Save</button>
-      ${c ? `<button class="btn danger block" type="button" data-action="deleteCat" data-id="${esc(c.id)}">Delete category</button>` : ''}
-    </form>`);
-}
-
 // ================================================================== wallets
 export function walletSheet(id) {
   const a = S.account(id);
@@ -474,7 +505,7 @@ export function walletForm(a, { focus = '' } = {}) {
     <form id="wallet-form" data-form="wallet" data-id="${esc(a?.id || '')}" novalidate>
       ${field('Name', `<input name="name" required maxlength="30" value="${esc(a?.name || '')}" placeholder="e.g. GCash, Maya, BDO savings" autocomplete="off">`)}
       ${field('Type', select('kind', Object.entries(WALLET_KINDS), a?.kind || 'ewallet'))}
-      ${field(a ? 'Balance now' : 'Starting balance', money('balance', bal), a ? 'Change this if it doesn\'t match your wallet or app. Pitaka records it as a correction, not as spending.' : 'What\'s in it today.')}
+      ${field(a ? 'Balance now' : 'Starting balance', money('balance', bal), a ? 'Change this if it doesn\'t match your wallet or app. Pitaka records the difference as a balance fix, not as spending.' : 'What\'s in it today.')}
       <button class="btn primary block" type="submit">Save wallet</button>
       ${a ? `<button class="btn danger block" type="button" data-action="deleteWallet" data-id="${esc(a.id)}">Delete wallet</button>` : ''}
     </form>`);
@@ -546,15 +577,18 @@ export function settingsSheet() {
     <div class="segmented" role="group" aria-label="Theme">${[['system', 'contrast', 'System'], ['light', 'sun', 'Light'], ['dark', 'moon', 'Dark']].map(([k, ic, l]) => `<button type="button" data-action="setTheme" data-theme="${k}" aria-pressed="${theme === k}">${icon(ic)}${l}</button>`).join('')}</div>
     <h3>Payday</h3>
     <form id="settings-form" data-form="settings" novalidate>
-      ${field('A recent payday', `<input type="date" name="payAnchor" value="${esc(s.payAnchor || today())}" required>`, 'You get paid every 2 weeks, counting from this date.')}
+      <p class="meta pad"><b>When is your next payday?</b> ${esc(S.paydayInfo().isToday ? 'Today is payday.' : `Pitaka has ${fmtDate(S.paydayInfo().next, { weekday: 'long', month: 'short', day: 'numeric' })}.`)}</p>
+      ${paydayPicker(S.period().next)}
       ${field('Usual paycheck', money('payAmount', s.payAmount), 'Fills in "Log paycheck" for you.')}
       <button class="btn block" type="submit">Save payday</button>
     </form>
     <h3>Wallets</h3>
     <div class="list card">${accounts().map((a) => `<button type="button" class="row" data-action="walletSheet" data-id="${esc(a.id)}"><span class="icon" aria-hidden="true">${icon('wallet')}</span><span class="grow"><span class="title">${esc(a.name)}</span><span class="meta">${esc(WALLET_KINDS[a.kind] || 'Wallet')}</span></span><span class="num">${esc(peso(S.accountBalance(a.id)))}</span></button>`).join('')}
       ${row('walletForm', 'Add a wallet')}</div>
-    <h3>Debts and reminders</h3>
+    <h3>Money</h3>
     <div class="list card">
+      ${row('catManager', 'Categories', 'Rename, emoji, order, hide, merge')}
+      ${row('exportSheet', 'Export CSV', 'Transactions, debts, goals, owed to you')}
       ${row('importSheet', 'Paste debts from a spreadsheet', 'Google Sheets or Excel')}
       ${row('calendarAll', 'Add all due dates to Calendar', 'One file with every bill and debt')}
     </div>
@@ -707,16 +741,18 @@ export const FORMS = {
     readDraft(form);
     const out = txnOut();
     const isNew = !out.id;
-    const saved = S.saveTxn(out);
+    const saved = out.kind === 'lend' && isNew ? S.lend(out) : S.saveTxn(out);
     remember(out);
     await S.flush();
     closeSheet();
     refresh();
     haptic();
     const d = out.kind === 'debt' && S.debt(out.debtId);
-    const msg = d && d.balance <= 0 ? `${d.name} is paid off!` : isNew ? 'Saved' : 'Changes saved';
-    if (isNew && saved?.id) toast(msg, { icon: 'check', action: 'Undo', onAction: () => undoSaved(saved.id) });
-    else toast(msg, { icon: 'check' });
+    const r = out.kind === 'collect' && S.receivable(out.receivableId);
+    const msg = d && d.balance <= 0 ? `${d.name} is paid off!` : r && r.balance <= 0 ? `${r.name} paid you back in full` : isNew ? 'Saved' : 'Changes saved';
+    const sub = budgetWarningText(budgetWarning(saved));
+    if (isNew && saved?.id) toast(msg, { icon: 'check', sub, warn: !!sub, action: 'Undo', onAction: () => undoSaved(saved.id) });
+    else toast(msg, { icon: 'check', sub, warn: !!sub });
   },
   async debt(form) {
     const f = new FormData(form);
@@ -800,7 +836,7 @@ export const FORMS = {
     const f = new FormData(form);
     const name = str(f, 'name', 40);
     if (!name) throw new FormProblem('Enter a name', 'name');
-    const c = { name, emoji: str(f, 'emoji', 8) || '🏷️', limit: optMoney(f, 'limit', 'limit') || 0 };
+    const c = { name, emoji: str(f, 'emoji', 8) || '🏷️', limit: optMoney(f, 'limit', 'limit') || 0, keywords: str(f, 'keywords', 200), hidden: f.get('hidden') === 'on' };
     if (form.dataset.id) c.id = form.dataset.id;
     S.saveCategory(c);
     await S.flush();
@@ -809,9 +845,7 @@ export const FORMS = {
   },
   async settings(form) {
     const f = new FormData(form);
-    const payAnchor = String(f.get('payAnchor') || '');
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(payAnchor)) throw new FormProblem('Pick a recent payday', 'payAnchor');
-    setSettings({ payAnchor, payAmount: optMoney(f, 'payAmount', 'paycheck') || 0 });
+    S.setPayday(readPayday(form), optMoney(f, 'payAmount', 'paycheck') || 0);
     await S.flush();
     refresh();
     toast('Payday saved');
@@ -824,11 +858,15 @@ export const FORMS = {
     const bal = optMoney(f, 'balance', 'balance');
     const a = form.dataset.id && S.account(form.dataset.id);
     if (a) {
-      setWalletBalance(a, bal ?? 0, { name, kind });
+      // A changed balance becomes a visible, undoable "Balance fix" entry (never spending or income).
+      S.saveAccount({ ...a, name, kind });
+      const fix = bal !== null ? S.fixWalletBalance(a.id, bal) : null;
       await S.flush();
+      haptic();
       refresh();
       walletSheet(a.id);
-      toast('Wallet updated');
+      if (fix) toast('Balance fixed', { icon: 'check', sub: `${fix.direction === 'up' ? '+' : '−'}${peso(fix.amount)} recorded as a balance fix`, action: 'Undo', onAction: () => undoSaved(fix.id) });
+      else toast('Wallet updated', { icon: 'check' });
     } else {
       const saved = S.saveAccount({ name, kind, opening: bal || 0, openingDate: today() });
       await S.flush();

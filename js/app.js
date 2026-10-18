@@ -1,24 +1,26 @@
 // Pitaka entry point: wires taps, forms, keyboard, lock, onboarding and the service worker.
 import * as S from './store.js';
 import { db } from './store.js';
-import { today, monthKey, shiftMonth, toISO, parseISO, advance } from './util.js';
+import { today, monthKey, shiftMonth, toISO, parseISO, advance, addDays, peso } from './util.js';
+import { detectSubscriptions } from './insights.js';
 import {
   $, ui, pref, toast, runToastAction, setBanner, clearBanner, renderBanners, setTrigger, syncInert, closeSheet, isSheetOpen,
   isLockOpen, isOverlayOpen, setBusy, showFormError, clearFormError, liveFormat, sizeAmount, setSettings, errorMessage,
-  isValidation, isStoreError, storeMessage, ensureEl,
+  isValidation, isStoreError, storeMessage, ensureEl, haptic,
 } from './ui-core.js';
 import { render, refresh, activityList, schedPay } from './ui-views.js';
 import {
   FORMS as SHEET_FORMS, draft, txnForm, renderTxnForm, readDraft, editTxn, deleteTxn, updateStepper, addDebtMenu, debtForm, debtSheet,
-  fixDebtForm, billForm, goalForm, goalSheet, catForm, walletSheet, walletForm, balancesForm, balanceRow, settingsSheet, restoredSheet,
-  importSheet, importSave, onImportInput, onImportChange, autoInstallments,
+  fixDebtForm, billForm, goalForm, goalSheet, walletSheet, walletForm, balancesForm, balanceRow, settingsSheet, restoredSheet,
+  importSheet, importSave, onImportInput, onImportChange, autoInstallments, undoSaved,
 } from './ui-sheets.js';
+import { MONEY_FORMS, recvSheet, recvForm, catManager, catForm, exportSheet } from './ui-money.js';
 import { icsForItem, icsForAll, deliverFile } from './ui-ics.js';
 import { applyTheme, initScrollHeader } from './ui-fx.js';
 import { Lock } from './ui-lock.js';
 import { Onboard, needsInstall, showInstall, continueInBrowser, showOnboarding, finishOnboarding, onboardPin, ONBOARD_FORMS } from './ui-onboard.js';
 
-const FORMS = { ...SHEET_FORMS, ...ONBOARD_FORMS };
+const FORMS = { ...SHEET_FORMS, ...ONBOARD_FORMS, ...MONEY_FORMS };
 
 // ============================================================ backup / restore
 async function exportData() {
@@ -132,7 +134,7 @@ const ACTIONS = {
     await S.flush();
     if (!added) return toast(failed ? 'None of those could be added' : 'Tick at least one debt');
     refresh();
-    if (ctx === 'onboard') { if (!failed) showOnboarding(4); toast(`Added ${added} debt${added === 1 ? '' : 's'}`); return; }
+    if (ctx === 'onboard') { if (!failed) showOnboarding(5); toast(`Added ${added} debt${added === 1 ? '' : 's'}`); return; }
     if (!failed) { closeSheet(); ui.tab = 'debts'; render(); }
     toast(`Added ${added} debt${added === 1 ? '' : 's'}${failed ? `. ${failed} need fixing` : ''}`);
   },
@@ -165,6 +167,63 @@ const ACTIONS = {
   deleteGoal: async ({ id }) => { if (confirm('Delete this goal? Its deposits stay in Activity.')) { S.deleteGoal(id); await S.flush(); closeSheet(); refresh(); toast('Goal deleted'); } },
 
   catForm: ({ id }) => catForm(id ? db.categories.find((c) => c.id === id) : null),
+  catManager: ({ reorder }) => catManager({ reorder: reorder === '1' }),
+  catMove: async ({ id, d }) => { S.moveCategory(id, Number(d)); await S.flush(); catManager({ reorder: true }); },
+  catMerge: async ({ id }, el) => {
+    const intoId = el.closest('form')?.querySelector('[name=intoId]')?.value;
+    const from = db.categories.find((c) => c.id === id);
+    const into = db.categories.find((c) => c.id === intoId);
+    if (!from || !into) return;
+    if (!confirm(`Merge ${from.name} into ${into.name}? Every entry and bill moves to ${into.name}, and ${from.name} is removed.`)) return;
+    const n = S.mergeCategory(id, intoId);
+    await S.flush();
+    refresh();
+    catManager();
+    toast(`Merged into ${into.name}`, { icon: 'merge', sub: `${n} entr${n === 1 ? 'y' : 'ies'} moved` });
+  },
+  markPaid: async ({ id }) => {
+    const b = S.bill(id);
+    if (!b) return toast("That bill wasn't found");
+    const t = S.payBill(id, { accountId: S.defaultAccountId() });
+    await S.flush();
+    haptic();
+    refresh();
+    toast(`${b.name} paid`, { icon: 'check', sub: `${peso(t.amount)} from ${S.account(t.accountId)?.name || 'your wallet'}`, action: 'Undo', onAction: () => undoSaved(t.id) });
+  },
+  addSubBill: async ({ key }) => {
+    const sub = detectSubscriptions().find((x) => x.key === key);
+    if (!sub) return refresh();
+    S.saveBill({ name: sub.name, amount: sub.amount, frequency: sub.frequency, nextDue: sub.nextDue < today() ? today() : sub.nextDue, categoryId: sub.categoryId || null });
+    await S.flush();
+    refresh();
+    toast(`${sub.name} added to your bills`, { icon: 'check' });
+  },
+  dismissSub: async ({ key }) => {
+    S.dismiss(`sub:${key}`);
+    await S.flush();
+    refresh();
+  },
+  debtsTab: ({ sub }) => { ui.debtsTab = sub; refresh(); },
+  recvSheet: ({ id }) => recvSheet(id),
+  recvForm: ({ id }) => recvForm(id ? S.receivable(id) : null),
+  lendForm: ({ id }) => txnForm({ kind: 'lend', receivableId: id || '' }),
+  collectForm: ({ id }) => {
+    const r = S.receivable(id);
+    txnForm({ kind: 'collect', receivableId: id || '', amount: r && r.balance > 0 ? r.balance : undefined, amountAuto: true });
+  },
+  deleteRecv: async ({ id }) => {
+    if (!confirm('Delete this person? Their entries stay in Activity.')) return;
+    S.deleteReceivable(id); await S.flush(); closeSheet(); refresh(); toast('Deleted');
+  },
+  reportMode: ({ sub }) => { ui.reportMode = sub; refresh(); },
+  period: ({ d }) => {
+    const cur = S.period(ui.reportPeriod || today()).start;
+    const next = addDays(cur, Number(d) * 14);
+    ui.reportPeriod = next > S.period().start ? S.period().start : next;
+    refresh();
+  },
+  exportSheet: () => exportSheet(),
+  onbConnect: () => toast('Connect your iPhone is in Settings', { sub: 'Finish setting up first, then open Settings → Connect your iPhone.' }),
   deleteCat: async ({ id }) => {
     if (!confirm('Delete this category? Past expenses in it will show as Uncategorized.')) return;
     S.deleteCategory(id); await S.flush(); closeSheet(); refresh();
@@ -294,6 +353,10 @@ document.addEventListener('change', (e) => {
   const t = e.target;
   const form = t.closest('form');
   if (t.dataset.impInc !== undefined || t.dataset.impType !== undefined) return onImportChange(t);
+  if (t.hasAttribute('data-export-range')) {
+    const custom = t.value === 'custom';
+    for (const n of ['from', 'to']) { const i = form?.querySelector(`[name=${n}]`); if (i) i.disabled = !custom; }
+  }
   if (form?.dataset.form === 'debt' && t.name === 'type') {
     form.dataset.type = t.value;
     const l = form.querySelector('[data-bal-label]');
@@ -437,7 +500,7 @@ initScrollHeader();
 renderBanners();
 render();
 if (!db.settings.onboarded) {
-  if (needsInstall()) showInstall(); else showOnboarding(1);
+  if (needsInstall()) showInstall(); else showOnboarding(2);
 }
 if (db.settings.pinHash) Lock.start('unlock');
 syncInert();
