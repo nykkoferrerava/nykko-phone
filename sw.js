@@ -16,6 +16,8 @@ const FILES = [
   './app.css',
   './manifest.webmanifest',
   './js/app.js',
+  './js/boot.js',
+  './js/ui-fx.js',
   './js/store.js',
   './js/storage.js',
   './js/util.js',
