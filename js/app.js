@@ -15,12 +15,16 @@ import {
   importSheet, importSave, onImportInput, onImportChange, autoInstallments, undoSaved,
 } from './ui-sheets.js';
 import { MONEY_FORMS, recvSheet, recvForm, catManager, catForm, exportSheet } from './ui-money.js';
+import * as X from './inbox.js';
+import {
+  REVIEW_FORMS, review, announce, teachSheet, teachTap, teachField, linkSheet, transferSheet, editItem, inboxSettings, alertFormats, templateForm, testTemplate, cardMapSheet,
+} from './ui-review.js';
 import { icsForItem, icsForAll, deliverFile } from './ui-ics.js';
 import { applyTheme, initScrollHeader } from './ui-fx.js';
 import { Lock } from './ui-lock.js';
 import { Onboard, needsInstall, showInstall, continueInBrowser, showOnboarding, finishOnboarding, onboardPin, ONBOARD_FORMS } from './ui-onboard.js';
 
-const FORMS = { ...SHEET_FORMS, ...ONBOARD_FORMS, ...MONEY_FORMS };
+const FORMS = { ...SHEET_FORMS, ...ONBOARD_FORMS, ...MONEY_FORMS, ...REVIEW_FORMS };
 
 // ============================================================ backup / restore
 async function exportData() {
@@ -224,6 +228,60 @@ const ACTIONS = {
   },
   exportSheet: () => exportSheet(),
   onbConnect: () => toast('Connect your iPhone is in Settings', { sub: 'Finish setting up first, then open Settings → Connect your iPhone.' }),
+
+  // ---- Review
+  goReview: () => { closeSheet(); ui.tab = 'review'; render(); },
+  reviewAccept: async ({ id, as, create }) => {
+    const t = X.accept(id, { as: as || undefined, create: create === '1' });
+    await S.flush();
+    haptic();
+    review.selected.delete(id);
+    refresh();
+    toast(t?.kind === 'adjust' ? 'Balance fixed' : 'Added', { icon: 'check', action: 'Undo', onAction: async () => { X.undoItem(id); await S.flush(); refresh(); } });
+  },
+  reviewIgnore: async ({ id }) => {
+    X.ignore(id); await S.flush(); refresh();
+    toast('Ignored', { action: 'Undo', onAction: async () => { X.restore(id); await S.flush(); refresh(); } });
+  },
+  reviewEdit: ({ id }) => editItem(id),
+  reviewLink: async ({ id }) => {
+    const it = S.inboxItem(id);
+    if (it?.reason === 'duplicate' && it.candidates?.length === 1) {
+      X.link(id, it.candidates[0]); await S.flush(); haptic(); refresh();
+      return toast('Linked to your entry', { icon: 'link', action: 'Undo', onAction: async () => { X.undoItem(id); await S.flush(); refresh(); } });
+    }
+    linkSheet(id);
+  },
+  reviewLinkTo: async ({ item, id }) => { X.link(item, id); await S.flush(); haptic(); closeSheet(); refresh(); toast('Linked to your entry', { icon: 'link' }); },
+  reviewTransfer: ({ id }) => transferSheet(id),
+  reviewTransferTo: async ({ item, id }) => { X.markTransfer(item, id); await S.flush(); haptic(); closeSheet(); refresh(); toast('Saved as a transfer', { icon: 'swap', sub: 'Not counted as spending or income' }); },
+  reviewTeach: ({ id }) => teachSheet(id),
+  teachTok: ({ i }) => teachTap(Number(i)),
+  reviewToggle: ({ id }) => { if (review.open.has(id)) review.open.delete(id); else review.open.add(id); refresh(); },
+  reviewSelect: () => { review.selecting = !review.selecting; review.selected.clear(); refresh(); },
+  reviewSelectAll: () => { const all = X.pending().map((x) => x.id); if (review.selected.size === all.length) review.selected.clear(); else all.forEach((x) => review.selected.add(x)); refresh(); },
+  reviewAcceptMany: async () => {
+    const r = X.acceptMany([...review.selected]);
+    await S.flush();
+    haptic();
+    review.selected.clear(); review.selecting = false;
+    refresh();
+    toast(`Accepted ${r.ok}`, { icon: 'check', sub: r.failed.length ? `${r.failed.length} need editing: ${r.failed[0].message}` : '' });
+  },
+  reviewIgnoreMany: async () => {
+    const n = review.selected.size;
+    X.ignore([...review.selected]); await S.flush();
+    review.selected.clear(); review.selecting = false;
+    refresh(); toast(`Ignored ${n}`);
+  },
+  reviewUndo: async ({ id }) => { X.undoItem(id); await S.flush(); refresh(); toast('Undone. It is back in Review.', { icon: 'undo' }); },
+  inboxSettings: () => inboxSettings(),
+  alertFormats: () => alertFormats(),
+  templateForm: ({ id }) => templateForm(id),
+  deleteTemplate: async ({ id }) => { if (!confirm('Delete this format? Alerts like it go back to Review.')) return; S.deleteTemplate(id); await S.flush(); alertFormats(); },
+  cardMapSheet: () => cardMapSheet(),
+  deleteCardMap: async ({ id }) => { S.deleteCardMap(id); await S.flush(); cardMapSheet(); },
+  importInbox: () => ensureFileInput('inboxFile', '.jsonl,.json,.txt,application/json,text/plain', importInboxFile).click(),
   deleteCat: async ({ id }) => {
     if (!confirm('Delete this category? Past expenses in it will show as Uncategorized.')) return;
     S.deleteCategory(id); await S.flush(); closeSheet(); refresh();
@@ -347,11 +405,38 @@ document.addEventListener('input', (e) => {
     $('#act-list').innerHTML = activityList();
   }
   if (t.hasAttribute?.('data-import-text')) onImportInput(t);
+  if (t.hasAttribute?.('data-template-test') || (t.name === 'format' && t.closest('#template-form'))) testTemplate(t.form.querySelector('[data-template-test]'));
 });
+
+// Hidden file pickers created on first use (Files catch-up, statements).
+function ensureFileInput(id, accept, onFile) {
+  let el = document.getElementById(id);
+  if (!el) {
+    el = Object.assign(document.createElement('input'), { type: 'file', id, accept, hidden: true });
+    el.addEventListener('change', () => { const f = el.files[0]; el.value = ''; if (f) onFile(f).catch(reportError); });
+    document.body.append(el);
+  }
+  return el;
+}
+async function importInboxFile(file) {
+  if (file.size > 20 * 1024 * 1024) return toast('That file is too big for an inbox file');
+  const { items, bad } = X.parseJsonl(await file.text());
+  if (!items.length) return toast(bad ? "Pitaka couldn't read that file" : 'The file is empty', { sub: 'Pick iCloud Drive → Shortcuts → Pitaka → inbox.jsonl' });
+  const out = X.processItems(items, { src: 'file' });
+  await S.flush();
+  closeSheet();
+  refresh();
+  if (!announce(out, 'Files')) toast(out.duplicates ? 'Nothing new in that file' : 'Imported', { icon: 'check', sub: `${out.duplicates} already in Pitaka${bad ? ` · ${bad} line${bad === 1 ? '' : 's'} skipped` : ''}` });
+}
 
 document.addEventListener('change', (e) => {
   const t = e.target;
   const form = t.closest('form');
+  if (t.hasAttribute('data-teach-field')) return teachField(t.value);
+  if (t.dataset.reviewSelect) {
+    if (t.checked) review.selected.add(t.dataset.reviewSelect); else review.selected.delete(t.dataset.reviewSelect);
+    return refresh();
+  }
   if (t.dataset.impInc !== undefined || t.dataset.impType !== undefined) return onImportChange(t);
   if (t.hasAttribute('data-export-range')) {
     const custom = t.value === 'custom';
@@ -511,4 +596,4 @@ try { restored = sessionStorage.getItem('pitaka.restored') === '1'; sessionStora
 if (restored && db.settings.onboarded && !db.settings.pinHash) restoredSheet();
 
 // Test hook, only when served from this computer.
-if (LOCAL) window.pitaka = { db: () => db, S, ui, render, toISO, parseISO, advance, Lock, Onboard, applyTheme, ACTIONS };
+if (LOCAL) window.pitaka = { db: () => db, S, X, ui, render, toISO, parseISO, advance, Lock, Onboard, applyTheme, ACTIONS, announce };

@@ -11,6 +11,7 @@ import {
 } from './ui-views.js';
 import { paydayPicker, readPayday } from './ui-money.js';
 import { budgetWarning, budgetWarningText } from './insights.js';
+import * as X from './inbox.js';
 
 const KINDS = [['expense', 'Expense'], ['income', 'Income'], ['debt', 'Pay debt'], ['goal', 'Savings'], ['transfer', 'Move']];
 const KIND_TITLES = { expense: 'Add expense', income: 'Add income', debt: 'Pay a debt', goal: 'Savings', transfer: 'Move money', adjust: 'Fee or interest', lend: 'Lend money', collect: 'Got paid back' };
@@ -262,6 +263,8 @@ function txnOut() {
   if (!isNum(amount)) throw new FormProblem(String(t.amountText || '').trim() ? "That amount doesn't look right. Use numbers only, like 1,250.50." : 'Enter an amount', 'amount');
   const out = { kind: t.kind, amount, date: t.date || today(), note: String(t.note || '').trim().slice(0, 120) };
   if (t.id) out.id = t.id;
+  // From Review → Edit: keep where it came from (merchant, reference, time, "confirmed by").
+  if (t.inboxId) { out.inboxId = t.inboxId; for (const [k, v] of Object.entries(t.capture || {})) if (v !== undefined && v !== null && v !== '') out[k] = v; }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(out.date)) throw new FormProblem('Pick a date', 'date');
   switch (t.kind) {
     case 'expense': {
@@ -585,6 +588,10 @@ export function settingsSheet() {
     <h3>Wallets</h3>
     <div class="list card">${accounts().map((a) => `<button type="button" class="row" data-action="walletSheet" data-id="${esc(a.id)}"><span class="icon" aria-hidden="true">${icon('wallet')}</span><span class="grow"><span class="title">${esc(a.name)}</span><span class="meta">${esc(WALLET_KINDS[a.kind] || 'Wallet')}</span></span><span class="num">${esc(peso(S.accountBalance(a.id)))}</span></button>`).join('')}
       ${row('walletForm', 'Add a wallet')}</div>
+    <h3>Capture</h3>
+    <div class="list card">
+      ${row('inboxSettings', 'Inbox and alerts', 'Review, Files catch-up, alert formats, card mapping')}
+    </div>
     <h3>Money</h3>
     <div class="list card">
       ${row('catManager', 'Categories', 'Rename, emoji, order, hide, merge')}
@@ -742,6 +749,7 @@ export const FORMS = {
     const out = txnOut();
     const isNew = !out.id;
     const saved = out.kind === 'lend' && isNew ? S.lend(out) : S.saveTxn(out);
+    if (draft.inboxId) X.settledBy(draft.inboxId, saved.id);
     remember(out);
     await S.flush();
     closeSheet();
@@ -751,7 +759,11 @@ export const FORMS = {
     const r = out.kind === 'collect' && S.receivable(out.receivableId);
     const msg = d && d.balance <= 0 ? `${d.name} is paid off!` : r && r.balance <= 0 ? `${r.name} paid you back in full` : isNew ? 'Saved' : 'Changes saved';
     const sub = budgetWarningText(budgetWarning(saved));
-    if (isNew && saved?.id) toast(msg, { icon: 'check', sub, warn: !!sub, action: 'Undo', onAction: () => undoSaved(saved.id) });
+    const dup = isNew && !out.inboxId ? X.duplicateOf(saved) : null;
+    if (dup) {
+      // You typed what an alert already added: offer to keep one.
+      toast(`Looks like ${peso(dup.amount)} ${dup.merchant || ''} from ${dup.conf?.[0]?.inst || 'an alert'}`.replace(/\s+/g, ' '), { icon: 'link', sub: 'Merge keeps one entry with your category and note', action: 'Merge', onAction: async () => { X.mergeInto(saved.id, dup.id); await S.flush(); refresh(); toast('Merged', { icon: 'check' }); } });
+    } else if (isNew && saved?.id) toast(msg, { icon: 'check', sub, warn: !!sub, action: 'Undo', onAction: () => undoSaved(saved.id) });
     else toast(msg, { icon: 'check', sub, warn: !!sub });
   },
   async debt(form) {

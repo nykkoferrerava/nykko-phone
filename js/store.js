@@ -3,6 +3,7 @@
 // No DOM access in this file: it runs unchanged under Node for the logic tests.
 import { uid, today, addDays, daysBetween, advance, retreat, round2, PER_MONTH, parseISO, toISO, monthKey, peso, FREQS, DEFAULT_DUE_DAYS } from './util.js';
 import { defaultAdapter, legacyAdapter, blockedAdapter, readLegacy, rescueLegacy, LEGACY_KEY, MIGRATED_KEY, lsGet, lsSet, lsDel } from './storage.js';
+import { compileTemplate, TEMPLATE_KINDS } from './alerts.js';
 
 const VERSION = 3;
 const MAX_AMOUNT = 1e9;
@@ -146,7 +147,44 @@ function shapeAccount(r, strict) {
     opening: v.number(r.opening, { min: -MAX_AMOUNT, max: MAX_AMOUNT }, 'Enter the starting balance', 'opening'),
     // null = no cut-off: every entry counts (the default Cash wallet until a starting balance is typed).
     openingDate: v.date(r.openingDate, {}, 'Pick the date of that balance', 'openingDate'),
+    ...shapeChecked(r.checked),
   };
+}
+// The last balance an alert, a balance check or a statement confirmed for a wallet.
+function shapeChecked(c) {
+  if (!isObj(c) || !Number.isFinite(toNum(c.amount)) || !(Number(c.at) > 0)) return {};
+  return { checked: { amount: round2(toNum(c.amount)), at: Math.trunc(Number(c.at)), via: SOURCES.includes(c.via) ? c.via : 'balance', ok: c.ok === true } };
+}
+// A saved alert format ("Teach this format"): text with {amount}, {merchant}, {balance}, {ref} and {#}.
+function shapeTemplate(r, strict) {
+  const v = rules(strict);
+  const t = {
+    id: r.id,
+    sender: str(r.sender, 80).toLowerCase() || v.bad('Say who sends these messages', 'sender', '*'),
+    format: typeof r.format === 'string' ? r.format.slice(0, 1000) : '',
+    kind: TEMPLATE_KINDS.includes(r.kind) ? r.kind : v.bad('Pick what this message means', 'kind', 'expense'),
+    label: str(r.label, 60),
+    createdAt: isISO(r.createdAt) ? r.createdAt : today(),
+    hits: Number.isInteger(r.hits) && r.hits >= 0 ? r.hits : 0,
+  };
+  try { compileTemplate(t.format); } catch (e) { if (strict) fail(e.message, 'format'); return null; }
+  if (isId(r.accountId)) t.accountId = r.accountId;
+  if (isId(r.cardId)) t.cardId = r.cardId;
+  return t;
+}
+// "Card ending 1234" or a sender name -> a wallet or a credit card.
+function shapeCardMap(r, strict) {
+  const v = rules(strict);
+  const last4 = /^\d{4}$/.test(String(r.last4 ?? '').trim()) ? String(r.last4).trim() : '';
+  const sender = str(r.sender, 80).toLowerCase();
+  if (!last4 && !sender) return v.bad('Enter the last 4 digits or the sender name', 'last4', null);
+  const m = { id: r.id, label: str(r.label, 60) };
+  if (last4) m.last4 = last4;
+  if (sender) m.sender = sender;
+  if (isId(r.cardId)) m.cardId = r.cardId;
+  else if (isId(r.accountId)) m.accountId = r.accountId;
+  else return v.bad('Pick the wallet or card', 'target', null);
+  return m;
 }
 function shapeDebt(r, strict) {
   const v = rules(strict);
@@ -212,7 +250,7 @@ function shapeGoal(r, strict) {
 
 function defaultSettings(accountId) {
   return {
-    onboarded: false, payAnchor: today(), payAmount: 0, pinHash: null, pinSalt: null, lockAfterSec: 60,
+    onboarded: false, payAnchor: today(), payAmount: 0, pinHash: null, pinSalt: null, lockAfterSec: 60, rawDays: 90, matchWindow: 30,
     hideInstallHint: false, lastCategoryId: null, defaultAccountId: accountId,
     lastBackupAt: null, entriesAtBackup: 0, pinFails: 0, pinLockUntil: 0,
   };
@@ -233,6 +271,9 @@ const SETTINGS_RULES = {
   lastCategoryId: (v) => (v === null || isId(v) ? v : undefined),
   defaultAccountId: (v) => (v === null || isId(v) ? v : undefined),
   lastBackupAt: (v) => (v === null || (typeof v === 'string' && Number.isFinite(Date.parse(v))) ? v : undefined),
+  theme: (v) => (['system', 'light', 'dark'].includes(v) ? v : undefined),
+  rawDays: (v) => (Number.isInteger(v) && v >= 0 && v <= 3650 ? v : undefined), // 0 = keep alert text forever
+  matchWindow: (v) => (Number.isInteger(v) && v >= 5 && v <= 720 ? v : undefined), // minutes
 };
 // Known settings are type-checked; other simple values (UI preferences) are kept as they are.
 function cleanSettings(s, base) {
@@ -268,6 +309,8 @@ function blank() {
     debtHistory: {},
     receivables: [],
     dismissed: [],
+    templates: [],
+    cardMap: [],
     inbox: [],
   };
 }
@@ -753,6 +796,8 @@ function sanitize(data) {
     goals: fixIds(list(data.goals).map((r) => shapeGoal(r, false))),
     debtHistory: {},
     dismissed: (Array.isArray(data.dismissed) ? data.dismissed : []).filter((x) => typeof x === 'string' && x.length <= 120).slice(-200),
+    templates: fixIds(list(data.templates).map((r) => shapeTemplate(r, false)).filter(Boolean)),
+    cardMap: fixIds(list(data.cardMap).map((r) => shapeCardMap(r, false)).filter(Boolean)),
     inbox: [],
   };
   // Categories from before v3 get their built-in key back by name (only one category per key).
@@ -847,12 +892,29 @@ function cleanTxn(r, data) {
   return t;
 }
 
-// Inbox items (relay, Files, statements). Shaped fully in js/inbox.js; here only what keeps the app safe.
+// Inbox items: what arrived from the relay, the Files catch-up or an import, with what Pitaka made of it.
+// The content is untrusted (alert text); only known fields of limited size are kept.
+export const INBOX_TYPES = ['entry', 'text', 'sms', 'email', 'wallet', 'balance', 'test', 'drift'];
+const INBOX_STATUS = ['pending', 'auto', 'done', 'ignored', 'test'];
+const RAW_FIELDS = { sender: 80, text: 4000, from: 200, subject: 300, body: 8000, merchant: 120, card: 60, name: 60, wallet: 60, category: 60, note: 200, amount: 40, source: 30 };
+function plainSmall(v, max = 4000) {
+  if (!isObj(v)) return undefined;
+  try { const j = JSON.stringify(v); return j.length <= max ? JSON.parse(j, (k, x) => (BAD_KEYS.has(k) ? undefined : x)) : undefined; } catch { return undefined; }
+}
 function cleanInbox(r) {
-  if (!isId(r.id)) return null;
-  const out = {};
-  for (const k of Object.keys(r)) if (!BAD_KEYS.has(k) && r[k] !== undefined) out[k] = r[k];
-  try { return JSON.parse(JSON.stringify(out)); } catch { return null; }
+  if (!isId(r.id) || !INBOX_TYPES.includes(r.type)) return null;
+  const ms = (v) => (Number.isFinite(v) && v > 0 ? Math.trunc(v) : 0);
+  const out = { id: r.id, type: r.type, cid: str(r.cid, 64), src: str(r.src, 12) || 'relay', status: INBOX_STATUS.includes(r.status) ? r.status : 'pending', at: ms(r.at), receivedAt: ms(r.receivedAt) };
+  const raw = {};
+  if (isObj(r.raw)) for (const [k, max] of Object.entries(RAW_FIELDS)) { const x = str(r.raw[k], max); if (x) raw[k] = x; }
+  out.raw = raw;
+  for (const k of ['reason']) { const x = str(r[k], 24); if (x) out[k] = x; }
+  for (const k of ['parsed', 'result', 'drift']) { const x = plainSmall(r[k]); if (x) out[k] = x; }
+  if (Array.isArray(r.candidates)) out.candidates = r.candidates.filter(isId).slice(0, 10);
+  for (const k of ['batch', 'source']) if (isId(r[k])) out[k] = r[k];
+  if (ms(r.decidedAt)) out.decidedAt = ms(r.decidedAt);
+  if (r.trimmed === true) out.trimmed = true;
+  return out;
 }
 
 // Where an entry came from and what confirmed it (quick add, alerts, statements). All optional.
@@ -1761,6 +1823,137 @@ function summarize(items) {
   }
   const byCategory = [...groups.values()].map((g) => ({ ...g, value: round2(g.value) })).sort((a, b) => b.value - a.value);
   return { income, spent, spentOnCards, debtPaid, saved, fees, net: round2(income - (spent - spentOnCards) - debtPaid - saved), byCategory, count: items.length };
+}
+
+// ---------- capture: inbox items, confirmations, alert formats, card mapping ----------
+// Several changes as one all-or-nothing save (the inbox pipeline applies a whole batch this way).
+export const transaction = (fn) => tx(fn);
+export const txn = (id) => db.txns.find((t) => t.id === id);
+export const inboxItem = (id) => db.inbox.find((x) => x.id === id);
+export const hasClientId = (cid) => !!cid && db.inbox.some((x) => x.cid === cid);
+export function addInbox(item) {
+  return tx(() => {
+    const it = cleanInbox({ ...defined(item), id: isId(item?.id) && !inboxItem(item.id) ? item.id : uid() });
+    if (!it) fail("That item couldn't be read");
+    db.inbox.push(it);
+    added('inbox', it);
+    return it;
+  });
+}
+export function patchInbox(id, patch) {
+  return tx(() => {
+    const it = inboxItem(id);
+    if (!it) return null;
+    touch('inbox', it);
+    const next = cleanInbox({ ...it, ...defined(patch), id: it.id, type: it.type });
+    for (const k of Object.keys(patch || {})) if (patch[k] === null) delete next[k];
+    return overwrite(it, next);
+  });
+}
+// Adds "confirmed by" to an entry and fills in what it was missing (merchant, reference, time).
+// Returns the fields it changed, so the change can be undone with setTxnFields().
+export function confirmTxn(id, conf, enrich = {}) {
+  return tx(() => {
+    const t = txn(id);
+    if (!t) fail("That entry wasn't found", 'txnId');
+    touch('txns', t);
+    const before = {};
+    for (const k of ['conf', 'merchant', 'ref', 'at', 'categoryId', 'note']) before[k] = t[k] === undefined ? null : JSON.parse(JSON.stringify(t[k]));
+    const c = cleanCapture({ conf: [conf] }).conf?.[0];
+    if (c) t.conf = [...(t.conf || []), c];
+    const e = cleanCapture(enrich);
+    if (!t.merchant && e.merchant) t.merchant = e.merchant;
+    if (!t.ref && e.ref) t.ref = e.ref;
+    if (!t.at && e.at) t.at = e.at;
+    if (t.kind === 'expense' && !t.categoryId && isId(enrich.categoryId)) t.categoryId = enrich.categoryId;
+    if (!t.note && str(enrich.note, 200)) t.note = str(enrich.note, 200);
+    return before;
+  });
+}
+// Puts capture fields back (null removes one). Only fields that never move money.
+export function setTxnFields(id, fields) {
+  return tx(() => {
+    const t = txn(id);
+    if (!t) return null;
+    touch('txns', t);
+    for (const k of ['conf', 'merchant', 'ref', 'at', 'categoryId', 'note']) {
+      if (!(k in fields)) continue;
+      if (fields[k] === null || fields[k] === undefined) delete t[k];
+      else if (k === 'categoryId') { if (isId(fields[k])) t.categoryId = fields[k]; }
+      else if (k === 'note') t.note = str(fields[k], 200);
+      else Object.assign(t, cleanCapture({ [k]: fields[k] }));
+    }
+    return t;
+  });
+}
+export const template = (id) => db.templates.find((x) => x.id === id);
+export function saveTemplate(input = {}) {
+  return tx(() => {
+    const existing = isId(input.id) ? template(input.id) : null;
+    const t = shapeTemplate({ ...(existing || {}), ...defined(input) }, true);
+    t.id = existing ? existing.id : uid();
+    if (existing) return overwrite(existing, t);
+    db.templates.push(t);
+    return t;
+  });
+}
+export function deleteTemplate(id) {
+  return tx(() => { db.templates = db.templates.filter((x) => x.id !== id); });
+}
+export function bumpTemplate(id) {
+  return tx(() => { const t = template(id); if (t) t.hits++; });
+}
+export function saveCardMap(input = {}) {
+  return tx(() => {
+    const existing = isId(input.id) ? db.cardMap.find((x) => x.id === input.id) : null;
+    const m = shapeCardMap({ ...(existing || {}), ...defined(input) }, true);
+    if (m.cardId && debt(m.cardId)?.type !== 'card') fail('Pick a credit card', 'target');
+    if (m.accountId && !account(m.accountId)) fail('Pick a wallet', 'target');
+    m.id = existing ? existing.id : uid();
+    if (existing) return overwrite(existing, m);
+    db.cardMap.push(m);
+    return m;
+  });
+}
+export function deleteCardMap(id) {
+  return tx(() => { db.cardMap = db.cardMap.filter((x) => x.id !== id); });
+}
+export function setAccountChecked(id, checked) {
+  return tx(() => {
+    const a = account(id);
+    if (!a) return;
+    const c = shapeChecked(checked).checked;
+    if (c) a.checked = c;
+  });
+}
+// What the shortcuts show: category and wallet lists (the relay keeps a copy for them).
+export function shortcutConfig() {
+  const names = [];
+  for (const a of db.accounts) names.push(a.name);
+  for (const d of db.debts) if (d.type === 'card' && d.balance >= 0 && !names.some((n) => n.toLowerCase() === d.name.toLowerCase())) names.push(d.name);
+  return {
+    v: 1,
+    categories: visibleCategories().map((c) => `${c.emoji} ${c.name}`),
+    wallets: names,
+    defaultWallet: account(defaultAccountId())?.name || names[0] || 'Cash',
+  };
+}
+// Alert text older than `days` (and decided) is cut down to what Pitaka read from it.
+export function trimRaw(days = db.settings.rawDays ?? 90, now = Date.now()) {
+  if (!(days > 0)) return 0;
+  const before = now - days * 86400000;
+  return tx(() => {
+    let n = 0;
+    for (const it of db.inbox) {
+      if (it.status === 'pending' || (it.receivedAt || it.at) >= before || !(it.raw?.text || it.raw?.body)) continue;
+      touch('inbox', it);
+      delete it.raw.text;
+      delete it.raw.body;
+      it.trimmed = true;
+      n++;
+    }
+    return n;
+  });
 }
 
 // Remembers that a suggestion was dismissed ("sub:<key>"), so it isn't offered again.

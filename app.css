@@ -703,3 +703,40 @@ button.card.row::before { display: none; }
 .check b { font-weight: 600; }
 .check.switch-row input[type='checkbox'] { width: 22px; height: 22px; }
 .row .icon b { font-size: 0.88rem; color: var(--text-2); font-weight: 700; }
+
+/* ---------- Review ---------- */
+.review-nudge { margin-top: 12px; background: var(--accent-soft); box-shadow: none; }
+.review-nudge .title { font-weight: 650; }
+.review-list { gap: 12px; }
+.review-card { display: flex; flex-direction: column; gap: 6px; padding: 14px 16px; }
+.review-card.selected { box-shadow: inset 0 0 0 2px var(--accent); }
+.rc-top { display: flex; align-items: center; gap: 8px; }
+.rc-src { flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 6px; font-size: 0.76rem; font-weight: 600; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rc-src .ti { width: 16px; height: 16px; }
+.rc-check { width: 22px; height: 22px; accent-color: var(--accent); flex: none; margin: 0; }
+.rc-main { font-size: 1.04rem; font-weight: 650; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.rc-cand { margin-top: 4px; padding: 6px 12px; border-radius: 12px; background: var(--surface-2); }
+.rc-cand .row { min-height: 52px; padding: 6px 0; }
+.rc-cand .row .icon { background: var(--surface); }
+.quote { display: block; width: 100%; text-align: left; margin-top: 4px; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); color: var(--text-2); font-size: 0.8rem; line-height: 1.4; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.quote.open { -webkit-line-clamp: unset; display: block; }
+.rc-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.rc-actions .btn.small { min-height: 38px; }
+.rc-actions .btn.plain { background: transparent; color: var(--text-2); margin-left: auto; }
+.btn.small.primary .ti { stroke-width: 2.2; }
+.select-bar {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(max(var(--safe-b), 8px) + var(--tab-h) + 16px); z-index: 11;
+  display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 99px; width: max-content; max-width: calc(100vw - 24px);
+  background: var(--glass-strong); -webkit-backdrop-filter: saturate(180%) blur(22px); backdrop-filter: saturate(180%) blur(22px);
+  box-shadow: var(--shadow-float), inset 0 0 0 0.5px var(--glass-line);
+}
+.select-bar .meta { padding: 0 6px; white-space: nowrap; }
+.tok-text { line-height: 2.3; padding: 12px; border-radius: 14px; background: var(--surface); box-shadow: var(--shadow-1); font-size: 0.94rem; }
+.tok { display: inline; padding: 5px 4px; margin: 0 -1px; border-radius: 7px; font-variant-numeric: tabular-nums; transition: background-color var(--press); }
+.tok.on { color: #fff; font-weight: 600; }
+.tok.on.amount { background: var(--accent); color: var(--accent-ink); }
+.tok.on.merchant { background: var(--series-1); }
+.tok.on.balance { background: var(--series-3); }
+.tok.on.ref { background: var(--series-2); }
+.mono, .mono-line { font-family: var(--mono); font-size: 0.76rem; }
+.mono-line { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
