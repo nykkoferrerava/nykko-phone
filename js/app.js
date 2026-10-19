@@ -25,8 +25,9 @@ import { Lock } from './ui-lock.js';
 import { Onboard, needsInstall, showInstall, continueInBrowser, showOnboarding, finishOnboarding, onboardPin, ONBOARD_FORMS } from './ui-onboard.js';
 import * as Sync from './sync.js';
 import { CONNECT_ACTIONS, CONNECT_FORMS, relaySheet, syncNow, showPendingNews, narrowCsp } from './ui-connect.js';
+import { STATEMENT_ACTIONS, STATEMENT_FORMS, onStatementChange } from './ui-statement.js';
 
-const FORMS = { ...SHEET_FORMS, ...ONBOARD_FORMS, ...MONEY_FORMS, ...REVIEW_FORMS, ...CONNECT_FORMS };
+const FORMS = { ...SHEET_FORMS, ...ONBOARD_FORMS, ...MONEY_FORMS, ...REVIEW_FORMS, ...CONNECT_FORMS, ...STATEMENT_FORMS };
 
 // ============================================================ backup / restore
 async function exportData() {
@@ -91,6 +92,7 @@ function removeWalletRow(el) {
 // ============================================================ actions (data-action)
 const ACTIONS = {
   ...CONNECT_ACTIONS,
+  ...STATEMENT_ACTIONS,
   pullNow: () => syncNow({ manual: true }),
   tab: ({ tab }) => { ui.tab = tab; if (tab === 'reports') { ui.reportMonth = monthKey(today()); ui.reportFollowsNow = true; } render(); },
   closeSheet,
@@ -437,6 +439,7 @@ document.addEventListener('change', (e) => {
   const t = e.target;
   const form = t.closest('form');
   if (t.hasAttribute('data-teach-field')) return teachField(t.value);
+  if (t.dataset.stmtRow !== undefined || t.dataset.stmtRole !== undefined || t.dataset.stmtOpt || t.hasAttribute('data-stmt-target')) return onStatementChange(t);
   if (t.dataset.reviewSelect) {
     if (t.checked) review.selected.add(t.dataset.reviewSelect); else review.selected.delete(t.dataset.reviewSelect);
     return refresh();

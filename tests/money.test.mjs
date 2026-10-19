@@ -81,6 +81,13 @@ describe('wallet balance fixes', () => {
     assert.equal(S.balanceAt(g.id, at(12)), 900);
     assert.equal(S.balanceAt(g.id, at(16)), 850);
   });
+  test('an entry added today for an earlier day has no known time, and counts in that whole day', () => {
+    fresh();
+    const g = S.saveAccount({ name: 'GCash', kind: 'ewallet', opening: 1000, openingDate: '2026-10-01' });
+    spend(200, { accountId: g.id, date: '2026-10-12' }); // saved on the 13th
+    assert.equal(S.balanceAt(g.id, new Date(2026, 9, 12, 8).getTime()), 800);
+    assert.equal(S.balanceAt(g.id, new Date(2026, 9, 11, 23).getTime()), 1000);
+  });
 });
 
 describe('bills and reports', () => {

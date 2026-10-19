@@ -1023,9 +1023,13 @@ export function balanceAt(id, ms) {
   if (!a) return 0;
   const day = toISO(new Date(ms));
   let s = a.opening;
+  // On that day, an entry counts if it happened before `ms`. Its time is `at` (from an alert or statement)
+  // or when it was saved that same day; an entry added on a later day for that day has no known time and
+  // counts as earlier.
+  const when = (t) => t.at || (t.createdAt && toISO(new Date(t.createdAt)) === t.date ? t.createdAt : 0);
   for (const t of db.txns) {
     if (a.openingDate && t.date < a.openingDate) continue;
-    if (t.date < day || (t.date === day && (t.at || t.createdAt || 0) <= ms)) s += cashDelta(t, id);
+    if (t.date < day || (t.date === day && when(t) <= ms)) s += cashDelta(t, id);
   }
   return round2(s);
 }

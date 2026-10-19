@@ -11,6 +11,7 @@ import {
   refresh, txnRow, byDateDesc, schedPay, minDue, debtTypeOf, debtName, statusChip, goalPlanText, personName,
 } from './ui-views.js';
 import { paydayPicker, readPayday } from './ui-money.js';
+import { walletStatementRow } from './ui-statement.js';
 import { budgetWarning, budgetWarningText } from './insights.js';
 import * as X from './inbox.js';
 
@@ -501,6 +502,7 @@ export function walletSheet(id) {
       <button type="button" class="btn primary" data-action="moveMoney" data-id="${esc(id)}">${icon('swap')}Move money</button>
       <button type="button" class="btn" data-action="walletForm" data-id="${esc(id)}" data-focus="balance">${icon('edit')}Fix balance</button>
     </div>
+    <div class="list card">${walletStatementRow(id)}</div>
     <h3>History</h3>${hist.length ? `<ul class="list">${hist.map((t) => txnRow(t, { ctx: 'wallet', walletId: id })).join('')}</ul>` : '<p class="empty">Nothing in this wallet yet.</p>'}`);
 }
 export function walletForm(a, { focus = '' } = {}) {
@@ -597,6 +599,7 @@ export function settingsSheet() {
     <h3>Money</h3>
     <div class="list card">
       ${row('catManager', 'Categories', 'Rename, emoji, order, hide, merge')}
+      ${row('statementSheet', 'Import a statement', 'PDF or CSV from GCash, GoTyme, Maya or your bank')}
       ${row('exportSheet', 'Export CSV', 'Transactions, debts, goals, owed to you')}
       ${row('importSheet', 'Paste debts from a spreadsheet', 'Google Sheets or Excel')}
       ${row('calendarAll', 'Add all due dates to Calendar', 'One file with every bill and debt')}
