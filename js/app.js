@@ -550,7 +550,7 @@ if (window.visualViewport) {
 document.addEventListener('focusin', (e) => {
   const t = e.target;
   if (!t.matches?.('input, select, textarea') || !t.closest('.sheet-panel, #onboard')) return;
-  setTimeout(() => { if (document.activeElement === t) t.scrollIntoView({ block: 'center', behavior: 'smooth' }); }, 300);
+  setTimeout(() => { if (document.activeElement === t) t.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); }, 300);
 });
 
 // Background: hide balances from the app switcher, re-lock after a while, and pick up date changes on return.

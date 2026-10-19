@@ -75,7 +75,7 @@ export function incomeVsSpending(months) {
   };
   registry.set(id, { type: 'groups', count: months.length, readout, last: months.length - 1 });
   return `<div class="legend"><span><i class="sw s1"></i>Income</span><span><i class="sw s2"></i>Spent</span></div>
-    <div class="chart" data-chart="${id}" tabindex="0" aria-label="Income and spending by month. Use the arrow keys to read each month.">
+    <div class="chart" data-chart="${id}" role="group" tabindex="0" aria-label="Income and spending by month. Use the arrow keys to read each month.">
       <div class="readout" aria-live="polite">${readout(months.length - 1)}</div>
       <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Income and spending by month">${svg}</svg>
     </div>`;
@@ -103,7 +103,7 @@ export function debtLine(points) {
   const pts = points.map((p) => ({ ...p, px: x(p), py: y(p.value) }));
   const readout = (i) => `<b>${esc(fmtDate(pts[i].date))}</b><span class="val">Total debt <span class="num">${peso(pts[i].value || 0, { whole: true })}</span></span>`;
   registry.set(id, { type: 'line', count: pts.length, points: pts, readout, last: pts.length - 1 });
-  return `<div class="chart" data-chart="${id}" tabindex="0" aria-label="Total debt over time. Use the arrow keys to read each day.">
+  return `<div class="chart" data-chart="${id}" role="group" tabindex="0" aria-label="Total debt over time. Use the arrow keys to read each day.">
       <div class="readout one" aria-live="polite">${readout(pts.length - 1)}</div>
       <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Total debt over time">${svg}</svg>
     </div>`;
