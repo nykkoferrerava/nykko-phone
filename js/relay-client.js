@@ -10,8 +10,9 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 const subtle = () => globalThis.crypto.subtle;
 
+// `reason`, when the relay gives one: 'paired-again' or 'token-replaced' (with code 'auth'), 'pair-paused'.
 export class RelayError extends Error {
-  constructor(message, code, status = 0) { super(message); this.name = 'RelayError'; this.code = code; this.status = status; }
+  constructor(message, code, status = 0, reason = '') { super(message); this.name = 'RelayError'; this.code = code; this.status = status; this.reason = reason; }
 }
 
 let fetchFn = (...a) => globalThis.fetch(...a);
@@ -64,9 +65,11 @@ async function call(base, path, { method = 'GET', token, body, timeout = 15000 }
   let data = null;
   try { data = await res.json(); } catch { /* not JSON */ }
   if (res.ok) return data || {};
-  const msg = data?.error || `The relay answered ${res.status}`;
-  const code = res.status === 401 ? 'auth' : res.status === 403 ? 'origin' : res.status === 409 ? 'unpaired' : res.status === 429 ? 'busy' : res.status === 507 ? 'full' : res.status >= 500 ? 'server' : 'invalid';
-  throw new RelayError(msg, code, res.status);
+  const msg = typeof data?.error === 'string' ? data.error : `The relay answered ${res.status}`;
+  const reason = typeof data?.reason === 'string' ? data.reason : '';
+  // A paused pairing lasts an hour, not "a minute": its own code, so the relay's message is shown.
+  const code = res.status === 401 ? 'auth' : res.status === 403 ? 'origin' : res.status === 409 ? 'unpaired' : res.status === 429 ? (reason === 'pair-paused' ? 'paused' : 'busy') : res.status === 507 ? 'full' : res.status >= 500 ? 'server' : 'invalid';
+  throw new RelayError(msg, code, res.status, reason);
 }
 
 // Checks that an address is a Pitaka relay. Returns { paired }.
