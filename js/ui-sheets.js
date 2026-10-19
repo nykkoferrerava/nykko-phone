@@ -701,14 +701,14 @@ function drawPreview(out) {
   }
   const typeOpts = Object.entries(S.DEBT_TYPES).map(([k, t]) => [k, t.label]);
   out.innerHTML = `<p class="meta pad">Found ${imp.rows.length} debt${imp.rows.length === 1 ? '' : 's'}. Check the type of each one and untick any you don't want.</p>
-    <div class="import-preview" tabindex="0" aria-label="Debts found"><table>
+    <div class="import-preview" tabindex="0" role="region" aria-label="Debts found"><table>
       <thead><tr><th scope="col">Add</th><th scope="col">Name</th><th scope="col">Type</th><th scope="col" class="num">Balance</th><th scope="col" class="num">Payment</th><th scope="col">Due</th></tr></thead>
       <tbody>${imp.rows.map((r, i) => {
         const bal = rowBalance(r);
         const pay = r.paymentAmount || r.plannedPayment || r.minDue || 0;
         const due = r.nextDue ? fmtDate(r.nextDue) : r.dueDay ? `Day ${r.dueDay}` : '';
         return `<tr>
-          <td><input type="checkbox" data-imp-inc="${i}" ${imp.include[i] ? 'checked' : ''} aria-label="Add ${esc(r.name || 'this row')}"></td>
+          <td><label class="imp-hit"><input type="checkbox" data-imp-inc="${i}" ${imp.include[i] ? 'checked' : ''} aria-label="Add ${esc(r.name || 'this row')}"></label></td>
           <td${r.name ? '' : ' class="warn"'}>${esc(r.name || 'No name')}${imp.errors[i] ? `<br><small class="critical-text">${esc(imp.errors[i])}</small>` : ''}</td>
           <td><select data-imp-type="${i}" aria-label="Type for ${esc(r.name || 'this row')}">${typeOpts.map(([k, l]) => `<option value="${esc(k)}" ${imp.types[i] === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></td>
           <td class="num${bal === null ? ' warn' : ''}">${bal === null ? 'Missing' : esc(peso(bal))}</td>

@@ -157,7 +157,7 @@ function preview() {
       <p class="meta">${rows.length} row${rows.length === 1 ? '' : 's'} · ${counts.existing} already in Pitaka${counts.skip ? ` · ${counts.skip} skipped` : ''}${closing ? ` · closing balance ${esc(peso(closing.balance))} on ${esc(fmtDate(closing.date))}` : ''}</p>
     </div>
     <details class="stmt-cols" ${needsMapping ? 'open' : ''}><summary>${icon('sliders')}Columns${needsMapping ? ' · pick the date and amount columns' : ''}</summary>
-      <div class="import-preview" tabindex="0" aria-label="Columns in the statement"><table>
+      <div class="import-preview" tabindex="0" role="region" aria-label="Columns in the statement"><table>
         <thead><tr>${st.table.header.map((h, i) => `<th><span class="meta">${esc(h)}</span><br><select data-stmt-role="${i}" aria-label="What ${esc(h)} holds">${roleOpts.map(([k, l]) => `<option value="${k}" ${st.roles[i] === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></th>`).join('')}</tr></thead>
         <tbody>${sample.map((r) => `<tr>${st.table.header.map((_, i) => `<td>${esc(r[i] || '')}</td>`).join('')}</tr>`).join('')}</tbody>
       </table></div>
