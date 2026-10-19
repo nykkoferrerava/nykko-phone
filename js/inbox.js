@@ -50,20 +50,44 @@ export function cleanRaw(x, now = Date.now()) {
   return { cid, type: x.type, at: Math.trunc(t), receivedAt: Number.isFinite(receivedAt) && receivedAt > 0 ? Math.trunc(receivedAt) : Math.trunc(now), raw };
 }
 
-// iCloud Drive/Shortcuts/Pitaka/inbox.jsonl: one JSON object per line (a JSON array also works).
+// Where the object starting at s[start] ('{') ends (the index after its '}'), or -1. Braces in strings don't count.
+function objectEnd(s, start) {
+  let depth = 0, inStr = false;
+  for (let j = start; j < s.length; j++) {
+    const ch = s[j];
+    if (inStr) { if (ch === '\\') j++; else if (ch === '"') inStr = false; }
+    else if (ch === '"') inStr = true;
+    else if (ch === '{' || ch === '[') depth++;
+    else if ((ch === '}' || ch === ']') && --depth === 0) return j + 1;
+  }
+  return -1;
+}
+
+// iCloud Drive/Shortcuts/Pitaka/inbox.jsonl: one JSON object per line (a JSON array also works). A line
+// that doesn't parse may start an object written over several lines (pretty-printed): it is read up to its
+// closing brace. If that doesn't parse either, only that one line counts as bad.
 export function parseJsonl(text) {
   const items = [];
   let bad = 0;
+  const add = (x) => { const c = cleanRaw(x); if (c) items.push(c); else bad++; };
   const src = String(text || '').replace(/^﻿/, '').trim();
   if (src.startsWith('[')) {
-    try { for (const x of JSON.parse(src)) { const c = cleanRaw(x); if (c) items.push(c); else bad++; } return { items, bad }; } catch { /* fall back to lines */ }
+    try { for (const x of JSON.parse(src)) add(x); return { items, bad }; } catch { items.length = 0; bad = 0; /* fall back to lines */ }
   }
-  for (const line of src.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    let x;
-    try { x = JSON.parse(line); } catch { bad++; continue; }
-    const c = cleanRaw(x);
-    if (c) items.push(c); else bad++;
+  for (let i = 0; i < src.length;) {
+    const nl = src.indexOf('\n', i) < 0 ? src.length : src.indexOf('\n', i);
+    const line = src.slice(i, nl).trim();
+    let next = nl + 1;
+    if (line) {
+      let x, ok = false;
+      try { x = JSON.parse(line); ok = true; } catch { /* maybe several lines */ }
+      if (!ok && line.startsWith('{')) {
+        const start = src.indexOf('{', i), end = objectEnd(src, start);
+        if (end > 0) try { x = JSON.parse(src.slice(start, end)); ok = true; next = end; } catch { /* not an object after all */ }
+      }
+      if (ok) add(x); else bad++;
+    }
+    i = next;
   }
   return { items, bad };
 }
@@ -182,6 +206,9 @@ function apply(it, p, { auto, via }) {
 // After an alert with "new balance": compare with what Pitaka has at that moment.
 function checkBalance(it, accountId, reported, at, via, out) {
   if (!accountId || !(reported >= 0) || reported === null) return;
+  // An alert from before the wallet's starting balance (a late catch-up) has nothing to compare with.
+  const opened = S.account(accountId)?.openingDate;
+  if (opened && toISO(new Date(at)) < opened) return;
   const computed = S.balanceAt(accountId, at);
   if (Math.abs(computed - reported) < 0.01) {
     S.setAccountChecked(accountId, { amount: reported, at, via, ok: true });
@@ -214,8 +241,11 @@ function handleText(it) {
   if (q.kind === 'lend') return { p: { ...base, kind: 'lend', person: q.person, accountId: q.accountId }, auto: q.confidence === 'high', lend: true, q };
   if (q.kind === 'utang' || q.kind === 'borrow') return { p: { ...base, kind: q.kind, person: q.person, accountId: q.accountId }, auto: false, reason: 'lending', q };
   if (q.kind === 'income') {
-    const r = q.person && openReceivable(q.person);
-    return { p: { ...base, kind: 'income', accountId: q.accountId }, auto: q.confidence === 'high' && !r, reason: q.confidence === 'high' ? undefined : 'unsure', q };
+    // "received 500 from mel" while Mel owes you: the repayment, or other income? Pitaka asks, as for alerts.
+    // (The parser keeps the name as the note: only lending words give a person.)
+    const r = openReceivable(q.person || q.note);
+    if (r) return { p: { ...base, kind: 'collect', receivableId: r.id, person: r.name, accountId: q.accountId }, auto: false, reason: 'repayment', q };
+    return { p: { ...base, kind: 'income', accountId: q.accountId }, auto: q.confidence === 'high', reason: q.confidence === 'high' ? undefined : 'unsure', q };
   }
   return { p: { ...base, kind: 'expense', categoryId: q.categoryId, accountId: q.cardId ? undefined : q.accountId, cardId: q.cardId }, auto: q.confidence === 'high', reason: q.confidence === 'high' ? undefined : 'unsure', q };
 }
@@ -319,7 +349,8 @@ function route(it, out) {
       const p = { ...other.parsed, conf: undefined };
       const t = S.saveTxn({ ...txnInput(p, other.id), conf: [{ via: p.src, inst: p.inst, at: p.at, ref: p.ref, inboxId: other.id }, { via: h.p.src, inst: h.p.inst, at: h.p.at, ref: h.p.ref, inboxId: it.id }] });
       S.patchInbox(other.id, { status: 'auto', result: { action: 'created', txnId: t.id }, reason: null, decidedAt: Date.now() });
-      S.patchInbox(it.id, { status: 'auto', parsed, result: { action: 'confirmed', txnId: t.id, before: { conf: null } } });
+      // Undo takes off this half's confirmation only; the other half's stays.
+      S.patchInbox(it.id, { status: 'auto', parsed, result: { action: 'confirmed', txnId: t.id, before: { conf: t.conf.slice(0, 1) } } });
       out.created.push(t.id);
       out.review = out.review.filter((x) => x !== other.id);
       return;

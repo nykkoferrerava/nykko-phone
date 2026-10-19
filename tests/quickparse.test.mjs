@@ -40,6 +40,19 @@ describe('quickparse: amounts', () => {
     assert.deepEqual(v('ref 123456789012 500'), [500]);
     assert.deepEqual(v('10/18 lunch 150'), [150]);
   });
+  test('a mistyped thousands comma is not read as a smaller amount', () => {
+    const v = (s) => Q.findAmounts(s).map((a) => a.value);
+    assert.deepEqual(v('12,00 lunch'), [], '"12,00" is not ₱12');
+    assert.deepEqual(v('lunch 1,20'), []);
+    assert.deepEqual(v('1,2k shopee'), [], '"1,2k" is not ₱2,000');
+    assert.deepEqual(v('kape 120, gcash'), [120], 'a comma after the amount is just punctuation');
+    assert.deepEqual(v('lunch,150'), [150]);
+    assert.deepEqual(v('1,200 lunch'), [1200]);
+    const { ctx } = setup();
+    const r = Q.parseQuick('12,00 lunch', ctx());
+    assert.equal(r.ok, false);
+    assert.equal(r.confidence, 'low');
+  });
 });
 
 describe('quickparse: the examples', () => {
@@ -60,6 +73,14 @@ describe('quickparse: the examples', () => {
   test('₱1,200 groceries bpi card -> the BPI credit card', () => {
     const { ctx } = setup();
     assert.deepEqual(pick(Q.parseQuick('₱1,200 groceries bpi card', ctx())), { kind: 'expense', amount: 1200, cat: 'Groceries', wallet: null, card: 'BPI Gold', note: 'Groceries', confidence: 'high' });
+  });
+  test('a full stop at the end (iOS adds one after a double space) still finds the wallet and category', () => {
+    const { ctx } = setup();
+    const r = pick(Q.parseQuick('kape 120 gcash.', ctx()));
+    assert.deepEqual([r.amount, r.cat, r.wallet, r.confidence], [120, 'Food', 'GCash', 'high']);
+    assert.equal(pick(Q.parseQuick('sahod 25,000 bpi.', ctx())).wallet, 'BPI Savings');
+    assert.equal(pick(Q.parseQuick('150 lunch.', ctx())).cat, 'Food');
+    assert.equal(pick(Q.parseQuick('7-eleven 85', ctx())).cat, 'Groceries', 'a hyphen inside a word stays');
   });
   test('"bpi" alone is the BPI wallet, not the card', () => {
     const { ctx } = setup();

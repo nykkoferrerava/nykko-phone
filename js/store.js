@@ -340,7 +340,9 @@ const ord = { txns: new Map(), inbox: new Map() };
 let trk = null; // inside tx(): before-images of records this change touched, by collection
 const freshStaged = () => ({ core: false, meta: false, rewrite: false, clearSecrets: false, txns: new Set(), inbox: new Set() });
 // Undo info back to what storage holds: the core JSON and before-images of records changed since.
-const freshUndo = (core) => ({ core, txns: new Map(), inbox: new Map(), full: null });
+// `full`: the data an erase replaced, kept until the erase is on disk. `gen`: which erase this belongs to.
+let gen = 0; // bumped by resetAll(): a batch taken before it was for the data the erase replaced
+const freshUndo = (core) => ({ core, txns: new Map(), inbox: new Map(), full: null, gen });
 let staged = freshStaged();
 let undo = freshUndo('');
 let writing = false;
@@ -474,26 +476,31 @@ function takeBatch() {
       ops[k] = { put, del };
     }
   }
-  return { ops, coreJ, imgs, rewrite: s.rewrite };
+  return { ops, coreJ, imgs, rewrite: s.rewrite, gen };
 }
 
 // The batch is on disk: it is the new "what storage holds" for the records it wrote.
 function settled(b) {
-  if (b.coreJ !== null) undo.core = b.coreJ;
-  if (b.rewrite) undo.full = null;
+  // A batch taken before an erase updates the data that erase replaced (what comes back if it fails).
+  let u = undo, st = staged;
+  while (u.gen !== b.gen && u.full) { st = u.full.staged; u = u.full.undo; }
+  if (b.coreJ !== null) u.core = b.coreJ;
+  if (b.rewrite) u.full = null; // everything before it is gone from the disk
   for (const k of BIG) {
-    const ids = b.rewrite ? new Set([...undo[k].keys(), ...b.imgs[k].keys()]) : b.imgs[k].keys();
+    const ids = b.rewrite ? new Set([...u[k].keys(), ...b.imgs[k].keys()]) : b.imgs[k].keys();
     for (const id of ids) {
-      if (staged[k].has(id)) undo[k].set(id, b.imgs[k].get(id) ?? null); // changed again since: undo to this batch
-      else undo[k].delete(id);
+      if (st[k].has(id)) u[k].set(id, b.imgs[k].get(id) ?? null); // changed again since: undo to this batch
+      else u[k].delete(id);
     }
   }
 }
 
 // The write failed: memory goes back to what storage holds, everyone waiting hears about it.
 function failed(err, first) {
-  if (undo.full) {
-    const f = undo.full;
+  // Back before every erase that hasn't reached the disk.
+  let f = null;
+  for (let u = undo; u.full; u = u.full.undo) f = u.full;
+  if (f) {
     db = f.db;
     ord.txns = f.ord.txns; ord.inbox = f.ord.inbox; seq = Math.max(seq, f.seq);
     undo = f.undo;
@@ -612,7 +619,9 @@ export async function load() {
     snapIn = await adapter.read();
   } catch (e) {
     console.error('Storage could not be opened', e);
-    if (!canUseLocalStorage()) {
+    // After the move to IndexedDB, v2's key is out of date (or gone). Opening it instead would show old or
+    // no data, and what was entered then would be lost when IndexedDB opens again: save nothing this time.
+    if (!canUseLocalStorage() || lsGet(MIGRATED_KEY)) {
       adapter = blockedAdapter();
       install(blank(), null, { schema: VERSION });
       return { ok: false, reason: 'blocked' };
@@ -702,6 +711,9 @@ async function loadLegacyMode() {
   }
   const data = sanitize(legacy.data);
   install(data, indexOrder(data), isObj(legacy.data._meta) ? legacy.data._meta : { schema: VERSION });
+  // v2's key keeps entries by id: ones that got an id just now are written back, or the next save would
+  // merge every entry that had none into one.
+  if (BIG.some((k) => !sameIds(list(legacy.data[k]), data[k]))) save();
   return { ok: true };
 }
 
@@ -749,19 +761,31 @@ export async function replaceAll(data) {
   if (!adapter) adapter = defaultAdapter();
   const m = { ...meta, schema: VERSION, restoredAt: new Date().toISOString() };
   if (m.migration?.state === 'copied') m.migration = { ...m.migration, state: 'replaced' };
+  // Other saves wait while the restore is written: written after it, they would put the data it replaces
+  // (wallets, settings) back on top of it.
+  while (writing || scheduled) await settle();
+  writing = true;
   try {
     await adapter.write(fullOps(next, m));
   } catch (e) {
+    writing = false;
+    schedule(); // what waited is written now (or just hears there was nothing to write)
     throw storageError(e);
   }
+  writing = false;
+  // Changes made meanwhile were to the replaced data: they are dropped, and whoever waited hears so.
+  const ws = waiters, lost = hasStaged();
+  waiters = [];
   install(next, indexOrder(next), m);
+  for (const w of ws) if (lost) w.reject(Object.assign(new Error('Not saved: a backup was restored at the same time'), { name: 'RestoredError' })); else w.resolve();
   if (adapter.kind !== 'localstorage') lsDel(LEGACY_KEY); // the pre-update copy is out of date now
 }
 
 // Erases everything, including the relay pairing. `await flush()` to know it reached the disk.
 export function resetAll() {
   if (!adapter) adapter = defaultAdapter();
-  const prev = undo.full || { db, ord: { txns: ord.txns, inbox: ord.inbox }, seq, undo };
+  const prev = { db, ord: { txns: ord.txns, inbox: ord.inbox }, seq, undo, staged };
+  gen++;
   if (adapter.kind !== 'localstorage') lsDel(LEGACY_KEY);
   lsDel(MIGRATED_KEY);
   db = blank();
