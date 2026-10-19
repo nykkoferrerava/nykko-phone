@@ -632,7 +632,8 @@ export async function load() {
     if (!canUseLocalStorage() || lsGet(MIGRATED_KEY)) {
       adapter = blockedAdapter();
       install(blank(), null, { schema: VERSION });
-      return { ok: false, reason: 'blocked' };
+      // moved: the data is in IndexedDB, which didn't open this time (closing and reopening usually helps).
+      return lsGet(MIGRATED_KEY) ? { ok: false, reason: 'blocked', moved: true } : { ok: false, reason: 'blocked' };
     }
     adapter = legacyAdapter();
     return { ...(await loadLegacyMode()), fallback: true };

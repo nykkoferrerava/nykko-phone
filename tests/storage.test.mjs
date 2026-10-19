@@ -375,7 +375,7 @@ describe('storage: v2 -> v3 migration', () => {
     spend(42); await S.flush(); // only in IndexedDB
     const S6 = await import(`${APP}/js/store.js?launch=6`);
     S6.useAdapter(broken);
-    assert.deepEqual(await quiet(() => S6.load()), { ok: false, reason: 'blocked' }, 'not the stale v2 data, which a later launch would delete');
+    assert.deepEqual(await quiet(() => S6.load()), { ok: false, reason: 'blocked', moved: true }, 'not the stale v2 data, which a later launch would delete');
     S6.saveTxn({ kind: 'income', amount: 1, date: '2026-10-13' });
     await assert.rejects(S6.flush(), (e) => e instanceof S6.StoreError);
     assert.equal(localStorage.getItem('pitaka.data'), V2_RAW, "v2's key is untouched");
@@ -385,7 +385,7 @@ describe('storage: v2 -> v3 migration', () => {
     // Once v2's key is gone, a failed open must not start an empty Pitaka either.
     const S8 = await import(`${APP}/js/store.js?launch=8`);
     S8.useAdapter(broken);
-    assert.deepEqual(await quiet(() => S8.load()), { ok: false, reason: 'blocked' });
+    assert.deepEqual(await quiet(() => S8.load()), { ok: false, reason: 'blocked', moved: true });
     await S.load();
   });
   test('on v2\'s key, entries given an id on load are written back, so editing one never drops another', async () => {

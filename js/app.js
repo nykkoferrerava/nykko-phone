@@ -632,7 +632,9 @@ if (loaded?.lost) {
 }
 if (loaded && loaded.ok === false) {
   ui.loadProblem = loaded;
-  if (loaded.reason === 'blocked') {
+  if (loaded.reason === 'blocked' && loaded.moved) {
+    setBanner('load', { level: 'critical', title: "Pitaka couldn't open your data", text: "Your entries are still on this phone, but Pitaka couldn't open them just now. Close Pitaka completely (swipe it away in the app switcher) and open it again. Anything you enter before then won't be saved.", dismiss: 'OK' });
+  } else if (loaded.reason === 'blocked') {
     setBanner('load', { level: 'critical', title: "Pitaka can't save on this phone", text: 'The browser is blocking storage (Private Browsing or "Block All Cookies" in Safari settings can do this). Anything you enter will be lost when you close Pitaka.', dismiss: 'OK' });
   } else {
     setBanner('load', { level: 'critical', title: "Your saved data couldn't be read", text: loaded.rescuedKey ? 'Pitaka kept the unreadable copy aside on this phone (it was not deleted) and opened empty. Restore your latest backup to get your entries back.' : 'Pitaka left it untouched and opened empty. Restore your latest backup, or save the unreadable copy first.', actions: [['Restore backup', 'importData', 'primary'], ['Save unreadable copy', 'exportRescued']] });
