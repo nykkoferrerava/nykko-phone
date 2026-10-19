@@ -41,7 +41,9 @@ const FIELDS = {
   balance: { wallet: 60, amount: 40 },
   test: { source: 30 },
 };
-const NEEDS = { entry: ['amount'], text: ['text'], sms: ['text'], email: [], wallet: ['amount'], balance: ['wallet', 'amount'], test: [] };
+// Automations may arrive empty: tapping play in the Shortcuts editor runs them without a message, and
+// Pitaka counts that as a test.
+const NEEDS = { entry: ['amount'], text: ['text'], sms: [], email: [], wallet: [], balance: ['wallet', 'amount'], test: [] };
 const ID = /^[A-Za-z0-9._:-]{6,64}$/;
 const KEY = /^i:[a-z0-9]{6,14}:[a-z0-9]{8,16}$/;
 const HASH = /^[0-9a-f]{64}$/;
@@ -144,7 +146,6 @@ function validateItem(input, now) {
     item[k] = s;
   }
   for (const k of NEEDS[x.type]) if (!item[k] || !item[k].trim()) return { error: `${k} is missing` };
-  if (x.type === 'email' && !item.subject && !item.body) return { error: 'subject or body is missing' };
   // The time it happened, when the shortcut sends one it can read; otherwise Pitaka uses receivedAt.
   const t = typeof x.at === 'number' ? x.at : typeof x.at === 'string' ? Date.parse(x.at) : NaN;
   if (Number.isFinite(t) && t > 0) item.at = new Date(Math.min(t, now + 86400000)).toISOString();

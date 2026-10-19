@@ -26,6 +26,7 @@ import { Onboard, needsInstall, showInstall, continueInBrowser, showOnboarding, 
 import * as Sync from './sync.js';
 import { CONNECT_ACTIONS, CONNECT_FORMS, relaySheet, syncNow, showPendingNews, narrowCsp } from './ui-connect.js';
 import { STATEMENT_ACTIONS, STATEMENT_FORMS, onStatementChange } from './ui-statement.js';
+import { GUIDE_ACTIONS, connectGuide } from './ui-guide.js';
 
 const FORMS = { ...SHEET_FORMS, ...ONBOARD_FORMS, ...MONEY_FORMS, ...REVIEW_FORMS, ...CONNECT_FORMS, ...STATEMENT_FORMS };
 
@@ -93,6 +94,7 @@ function removeWalletRow(el) {
 const ACTIONS = {
   ...CONNECT_ACTIONS,
   ...STATEMENT_ACTIONS,
+  ...GUIDE_ACTIONS,
   pullNow: () => syncNow({ manual: true }),
   tab: ({ tab }) => { ui.tab = tab; if (tab === 'reports') { ui.reportMonth = monthKey(today()); ui.reportFollowsNow = true; } render(); },
   closeSheet,
@@ -233,7 +235,8 @@ const ACTIONS = {
     refresh();
   },
   exportSheet: () => exportSheet(),
-  onbConnect: () => toast('Connect your iPhone is in Settings', { sub: 'Finish setting up first, then open Settings → Connect your iPhone.' }),
+  // The guide opens once the welcome steps are done (they cover the whole screen).
+  onbConnect: () => { Onboard.afterFinish = () => connectGuide('onboarding'); showOnboarding(6); },
 
   // ---- Review
   goReview: () => { closeSheet(); ui.tab = 'review'; render(); },

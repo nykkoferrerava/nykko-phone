@@ -370,7 +370,7 @@ function isTest(r) {
   if (r.type === 'text') return lc(r.raw.text) === 'test';
   if (r.type === 'sms' || r.type === 'email') return !r.raw.text && !r.raw.body && !r.raw.subject || lc(r.raw.text) === 'test';
   if (r.type === 'balance') return lc(r.raw.wallet) === 'test';
-  if (r.type === 'wallet') return lc(r.raw.merchant) === 'test';
+  if (r.type === 'wallet') return lc(r.raw.merchant) === 'test' || (!r.raw.merchant && !r.raw.amount);
   return false;
 }
 const testSource = (r) => (r.type === 'test' ? r.raw.source || 'test' : r.type);

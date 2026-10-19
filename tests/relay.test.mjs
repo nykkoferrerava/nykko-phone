@@ -3,27 +3,10 @@
 // sealing and opening items, acknowledging, expiry, rate limits, CORS and logging.
 import { test, describe, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { APP } from './env-relay.mjs';
+import { APP, mockD1 } from './env-relay.mjs';
 
 const worker = (await import(`${APP}/relay/worker.js`)).default;
 const C = await import(`${APP}/js/relay-client.js`);
-const { DatabaseSync } = await import('node:sqlite');
-
-// D1's binding API over node:sqlite. Like D1, binding `undefined` is an error.
-function mockD1() {
-  const sql = new DatabaseSync(':memory:');
-  const stmt = (q, args = []) => ({
-    bind(...a) {
-      if (a.some((v) => v === undefined)) throw new TypeError('D1_TYPE_ERROR: Type undefined is not supported');
-      return stmt(q, a);
-    },
-    async first() { return sql.prepare(q).get(...args) ?? null; },
-    async all() { return { success: true, results: sql.prepare(q).all(...args), meta: {} }; },
-    async run() { const r = sql.prepare(q).run(...args); return { success: true, meta: { changes: Number(r.changes) } }; },
-  });
-  return { sql, prepare: (q) => stmt(q), async batch(list) { const out = []; for (const s of list) out.push(await s.run()); return out; } };
-}
-
 const ORIGIN = 'https://nykkoferrerava.github.io';
 const BASE = 'https://pitaka-relay.example.workers.dev';
 const SECRET = 'correct-horse-battery-staple';
@@ -162,7 +145,6 @@ describe('relay: what an item may contain', () => {
       { type: 'text', id: 'abcdef1', text: 'x'.repeat(301) },
       { type: 'sms', id: 'abcdef1', sender: 'GCash', text: { nested: true } },
       { type: 'balance', id: 'abcdef1', wallet: 'GCash' },
-      { type: 'email', id: 'abcdef1', from: 'a@b.c' },
       [entry()],
       'null',
     ];
@@ -170,6 +152,11 @@ describe('relay: what an item may contain', () => {
     assert.equal((await raw('/in', { method: 'POST', token: w, body: '{"type":' })).status, 400);
     assert.equal((await raw('/in', { method: 'POST', token: w, body: { ...entry(), note: 'x'.repeat(17000) } })).status, 400, 'over 16 KB');
     assert.equal(env.DB.sql.prepare('SELECT COUNT(*) AS n FROM items').get().n, 0);
+  });
+  test('an automation run from the Shortcuts editor (no message) still arrives, as a test', async () => {
+    const { relay, key } = await paired();
+    for (const type of ['sms', 'email', 'wallet']) assert.equal((await C.send(relay, { type, id: `${type}-123456` })).ok, true);
+    assert.deepEqual((await C.collect(relay, key)).items.map((x) => x.item.type), ['sms', 'email', 'wallet']);
   });
   test('keeps known fields only, accepts { item }, makes an id when none is sent, ignores an unreadable time', async () => {
     const { relay, key } = await paired();

@@ -593,6 +593,7 @@ export function settingsSheet() {
       ${row('walletForm', 'Add a wallet')}</div>
     <h3>Capture</h3>
     <div class="list card">
+      ${row('connectGuide', 'Connect your iPhone', 'Back Tap quick add, SMS and email alerts, step by step', 'data-from="settings"')}
       ${row('relaySheet', 'Inbox relay', Sync.paired() ? `Paired with ${esc(Sync.relayHost())}` : 'Not set up · lets your shortcuts reach Pitaka', 'data-from="settings"')}
       ${row('inboxSettings', 'Inbox and alerts', 'Review, Files catch-up, alert formats, card mapping')}
     </div>

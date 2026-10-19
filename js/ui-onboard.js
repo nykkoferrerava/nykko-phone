@@ -126,7 +126,9 @@ export async function finishOnboarding() {
   $('#onboard').innerHTML = '';
   syncInert();
   render();
-  toast("You're all set", { icon: 'check' });
+  const next = Onboard.afterFinish;
+  Onboard.afterFinish = null;
+  if (next) next(); else toast("You're all set", { icon: 'check' });
 }
 
 export function onboardPin() {

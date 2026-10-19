@@ -42,6 +42,8 @@ const FILES = [
   './js/ui-connect.js',
   './js/statements.js',
   './js/ui-statement.js',
+  './js/guide.js',
+  './js/ui-guide.js',
   './vendor/pdfjs/pdf.min.mjs',
   './vendor/pdfjs/pdf.worker.min.mjs',
   './icons/icon-180.png',

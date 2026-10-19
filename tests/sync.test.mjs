@@ -3,23 +3,11 @@
 import { test, describe, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { APP, S, store, fresh, cat } from './env.mjs';
-import './env-relay.mjs';
+import { mockD1 } from './env-relay.mjs';
 
 const worker = (await import(`${APP}/relay/worker.js`)).default;
 const R = await import(`${APP}/js/relay-client.js`);
 const Y = await import(`${APP}/js/sync.js`);
-const { DatabaseSync } = await import('node:sqlite');
-
-function mockD1() {
-  const sql = new DatabaseSync(':memory:');
-  const stmt = (q, args = []) => ({
-    bind: (...a) => stmt(q, a),
-    first: async () => sql.prepare(q).get(...args) ?? null,
-    all: async () => ({ results: sql.prepare(q).all(...args) }),
-    run: async () => ({ meta: { changes: Number(sql.prepare(q).run(...args).changes) } }),
-  });
-  return { sql, prepare: (q) => stmt(q), batch: async (l) => Promise.all(l.map((s) => s.run())) };
-}
 const BASE = 'https://pitaka-relay.example.workers.dev';
 const SECRET = 'correct-horse-battery-staple';
 let env;
