@@ -83,8 +83,8 @@ function cut(s, max) {
   const t = s.slice(0, max);
   return /[\uD800-\uDBFF]$/.test(t) ? t.slice(0, -1) : t;
 }
-// "2026-10-19 09:23 (Manila time)". Manila is UTC+8 all year, so no time zone data is needed.
-const when = (t) => `${new Date(Number(t) + 8 * HOUR).toISOString().slice(0, 16).replace('T', ' ')} (Manila time)`;
+// "2026-10-19 09:23 Manila time". Manila is UTC+8 all year, so no time zone data is needed.
+const when = (t) => `${new Date(Number(t) + 8 * HOUR).toISOString().slice(0, 16).replace('T', ' ')} Manila time`;
 
 // The client, for rate limits: an IPv4 address, or the /64 network of an IPv6 one. One phone or home
 // network gets a whole /64, so counting single IPv6 addresses would give one client billions of tries.
@@ -210,13 +210,29 @@ function validateItem(input, now) {
     item[k] = cut(s, max);
   }
   for (const k of NEEDS[x.type]) if (!item[k] || !item[k].trim()) return { error: `${k} is missing` };
-  // The time it happened, when the shortcut sends one: within the last year and at most a day ahead.
-  // Anything else (a wrong clock, Unix seconds instead of milliseconds) is left out, and Pitaka uses
-  // receivedAt.
-  const t = typeof x.at === 'number' ? x.at : typeof x.at === 'string' ? Date.parse(x.at) : NaN;
-  if (Number.isFinite(t) && t > now - 366 * 86400000 && t <= now + 86400000) item.at = new Date(t).toISOString();
+  const at = readAt(x.at, now);
+  if (at) item.at = at;
   item.receivedAt = new Date(now).toISOString();
   return { item };
+}
+// The time it happened, when the shortcut sends one. With an offset ("2026-10-19T09:30:00+08:00", what
+// Shortcuts' ISO 8601 format gives) or in milliseconds, it is an instant. An ISO time without an offset
+// is the phone's clock: it is kept as sent, so Pitaka reads it in the phone's time zone (this Worker
+// runs in UTC and would read it 8 hours off). Anything else, or a time outside the last year or more
+// than a day ahead (a wrong clock, Unix seconds), is left out, and Pitaka uses receivedAt.
+const LOCAL_AT = /^(\d{4}-\d\d-\d\d)[T ](\d\d:\d\d(?::\d\d(?:\.\d{1,3})?)?)$/;
+const ZONED = /(?:Z|[+-]\d\d:?\d\d|\b(?:GMT|UTC)(?:[+-]\d{1,4})?)$/i;
+function readAt(at, now) {
+  const ok = (t) => Number.isFinite(t) && t > now - 366 * 86400000 && t <= now + 86400000;
+  if (typeof at === 'number') return ok(at) ? new Date(at).toISOString() : undefined;
+  if (typeof at !== 'string' || at.length > 64) return undefined;
+  const s = at.trim();
+  const local = LOCAL_AT.exec(s);
+  // Checked as Manila time; the day of slack covers a phone in any other time zone.
+  if (local) { const wall = `${local[1]}T${local[2]}`; return ok(Date.parse(`${wall}Z`) - 8 * HOUR) ? wall : undefined; }
+  if (!ZONED.test(s)) return undefined;
+  const t = Date.parse(s);
+  return ok(t) ? new Date(t).toISOString() : undefined;
 }
 function validateConfig(x) {
   if (!x || typeof x !== 'object' || Array.isArray(x)) return null;

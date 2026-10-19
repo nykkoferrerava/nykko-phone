@@ -183,6 +183,26 @@ describe('relay: what an item may contain', () => {
     const got = (await C.collect(relay, key)).items.map((x) => (x.item.at ? Date.parse(x.item.at) : null));
     assert.deepEqual(got, [now - 5 * 60000, now + 3600000, now - 200 * 86400000, null, null, null, now - 60000]);
   });
+  test('a time without an offset is kept as the phone sent it, so Pitaka reads it in the phone\'s time zone, not UTC', async () => {
+    const { relay, key } = await paired();
+    const hourAgo = Date.now() - 3600000;
+    const manila = new Date(hourAgo + 8 * 3600000).toISOString().slice(0, 19); // an hour ago, on a Manila clock
+    for (const [i, at] of [`${manila}+08:00`, manila, manila.replace('T', ' '), `${manila.slice(0, 10)}`, `${manila} PM`].entries()) await C.send(relay, { type: 'test', id: `local-at-${i}`, at });
+    const items = (await C.collect(relay, key)).items.map((x) => x.item);
+    assert.equal(items[1].at, manila, 'kept as sent');
+    assert.equal(items[2].at, manila, 'a space instead of the T is made the ISO form Safari reads');
+    assert.deepEqual([items[3].at, items[4].at], [undefined, undefined], 'a date alone, or something unreadable, is left out');
+    // What Pitaka does with them on an iPhone set to Manila time.
+    const { cleanRaw } = await import(`${APP}/js/inbox.js`);
+    const tz = process.env.TZ;
+    process.env.TZ = 'Asia/Manila';
+    try {
+      const [withOffset, without, spaced] = items.slice(0, 3).map((it) => cleanRaw(it).at);
+      assert.equal(without, withOffset, '"…T09:30:00" and "…T09:30:00+08:00" are the same instant');
+      assert.equal(spaced, withOffset);
+      assert.equal(withOffset, hourAgo - (hourAgo % 1000));
+    } finally { if (tz === undefined) delete process.env.TZ; else process.env.TZ = tz; }
+  });
 });
 
 describe('relay: sealed items', () => {
@@ -475,7 +495,7 @@ describe('relay: guessing the setup secret, and pairing again', () => {
     const a = await paired();
     const b = await paired();
     const manila = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 13).replace('T', ' ');
-    await assert.rejects(C.collect(a.relay, a.key), (e) => e.code === 'auth' && e.reason === 'paired-again' && e.message.includes(`paired again on ${manila}:`) && /\(Manila time\)/.test(e.message) && /change ADMIN_SECRET/.test(e.message));
+    await assert.rejects(C.collect(a.relay, a.key), (e) => e.code === 'auth' && e.reason === 'paired-again' && e.message.includes(`paired again on ${manila}:`) && /\d\d:\d\d Manila time\./.test(e.message) && /change ADMIN_SECRET/.test(e.message));
     await assert.rejects(C.send(a.relay, entry()), (e) => e.code === 'auth' && e.reason === 'paired-again' && /new write token/.test(e.message));
     for (let i = 0; i < 25; i++) assert.equal((await raw('/pull', { token: a.relay.read })).status, 401, 'an old token never works');
     assert.equal((await raw('/pull', { token: b.relay.read })).status, 200, 'and is not counted as a guess');
