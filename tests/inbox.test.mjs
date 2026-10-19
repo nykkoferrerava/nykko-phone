@@ -113,6 +113,20 @@ describe('inbox: Quick Add – Text', () => {
     assert.equal(S.accountBalance(gcash.id), 5500, 'the borrowed money is in the wallet');
     assert.equal(S.monthSummary('2026-10').income, 0, 'not income');
   });
+  test('"received 500 from mel" while Mel owes you asks whether it is the repayment', () => {
+    const { gcash } = setup();
+    S.lend({ name: 'Mel', amount: 500, accountId: gcash.id });
+    const out = run(item('text', { text: 'received 500 from mel' }));
+    assert.equal(out.created.length, 0, 'not added as income on its own');
+    const [it] = X.pending();
+    assert.deepEqual([it.reason, it.parsed.kind, it.parsed.person], ['repayment', 'collect', 'Mel']);
+    X.accept(it.id);
+    assert.equal(S.findReceivable('Mel').balance, 0);
+    assert.equal(S.monthSummary('2026-10').income, 0);
+    // From someone who owes you nothing, it is income as before.
+    run(item('text', { text: 'received 300 from joy' }));
+    assert.equal(S.monthSummary('2026-10').income, 300);
+  });
 });
 
 describe('inbox: alerts and duplicates', () => {
@@ -241,6 +255,18 @@ describe('inbox: balances', () => {
     assert.equal(it.reason, 'drift');
     X.accept(it.id);
     assert.equal(S.accountBalance(gotyme.id), 1950.25);
+  });
+  test('an alert from before the wallet\'s starting balance is not a balance drift', () => {
+    const { gcash } = setup();
+    S.saveAccount({ id: gcash.id, opening: 4000, openingDate: '2026-10-13' }); // set up today, with today's balance
+    // Last week's alert arrives late (the Files catch-up): its balance is already in the starting one.
+    run(sms('GCash', 'You have paid PHP 289.00 to JOLLIBEE on 10-08-2026. Ref No. 4444444444444. Your new balance is PHP 4,711.00.', at('2026-10-08', 10)));
+    assert.equal(X.reviewCount(), 0, 'no drift question, so no Balance fix that could not change anything');
+    assert.equal(S.accountBalance(gcash.id), 4000);
+    assert.equal(S.account(gcash.id).checked, undefined);
+    // Today's alerts are still checked.
+    run(sms('GCash', 'You have paid PHP 100.00 to KUYA ISAW on 10-13-2026. Ref No. 5555555555555. Your new balance is PHP 3,850.00.'));
+    assert.deepEqual(X.pending().map((x) => [x.type, x.drift?.reported, x.drift?.computed]), [['drift', 3850, 3900]]);
   });
   test('entries logged after the balance check still count when fixing', () => {
     const { gcash } = setup();

@@ -182,6 +182,9 @@ function apply(it, p, { auto, via }) {
 // After an alert with "new balance": compare with what Pitaka has at that moment.
 function checkBalance(it, accountId, reported, at, via, out) {
   if (!accountId || !(reported >= 0) || reported === null) return;
+  // An alert from before the wallet's starting balance (a late catch-up) has nothing to compare with.
+  const opened = S.account(accountId)?.openingDate;
+  if (opened && toISO(new Date(at)) < opened) return;
   const computed = S.balanceAt(accountId, at);
   if (Math.abs(computed - reported) < 0.01) {
     S.setAccountChecked(accountId, { amount: reported, at, via, ok: true });
@@ -214,8 +217,11 @@ function handleText(it) {
   if (q.kind === 'lend') return { p: { ...base, kind: 'lend', person: q.person, accountId: q.accountId }, auto: q.confidence === 'high', lend: true, q };
   if (q.kind === 'utang' || q.kind === 'borrow') return { p: { ...base, kind: q.kind, person: q.person, accountId: q.accountId }, auto: false, reason: 'lending', q };
   if (q.kind === 'income') {
-    const r = q.person && openReceivable(q.person);
-    return { p: { ...base, kind: 'income', accountId: q.accountId }, auto: q.confidence === 'high' && !r, reason: q.confidence === 'high' ? undefined : 'unsure', q };
+    // "received 500 from mel" while Mel owes you: the repayment, or other income? Pitaka asks, as for alerts.
+    // (The parser keeps the name as the note: only lending words give a person.)
+    const r = openReceivable(q.person || q.note);
+    if (r) return { p: { ...base, kind: 'collect', receivableId: r.id, person: r.name, accountId: q.accountId }, auto: false, reason: 'repayment', q };
+    return { p: { ...base, kind: 'income', accountId: q.accountId }, auto: q.confidence === 'high', reason: q.confidence === 'high' ? undefined : 'unsure', q };
   }
   return { p: { ...base, kind: 'expense', categoryId: q.categoryId, accountId: q.cardId ? undefined : q.accountId, cardId: q.cardId }, auto: q.confidence === 'high', reason: q.confidence === 'high' ? undefined : 'unsure', q };
 }
