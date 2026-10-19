@@ -73,7 +73,7 @@ for all chrome.
 - Only high-confidence results apply automatically; everything else lands in Review (unparsed,
   low-confidence, possible duplicate, balance drift, transfer?). Every automatic change can be undone.
 - Teach this format: tap amount / merchant / balance / reference → saved template
-  (`You have paid {amount} to {merchant}…`), editable in Settings → Alert formats; part of backups.
+  (`You have paid {amount} to {merchant}…`), editable in Settings → Inbox and alerts → Alert formats; part of backups.
 - Relay: Cloudflare Worker + D1 (chosen over KV for strong consistency; justified in the code), write/read token scopes, constant-time compare,
   rate limits, ECDH-ES (P-256) + AES-GCM per item, ack-then-delete, 30-day expiry, CORS to the Pages origin.
 - Statement import: vendored pdf.js (lazy, precached), password prompt never stored, CSV, column mapping
@@ -82,7 +82,9 @@ for all chrome.
 ## Guide and docs (milestone 8)
 
 In-app "Connect your iPhone" checklist with Copy and Test buttons, mirrored in `docs/SETUP-SHORTCUTS.md`
-(generated from `js/guide.js`, checked by a test). `docs/SETUP-RELAY.md`, `docs/ALERT-FORMATS.md`, README.
+(generated from `js/guide.js`, checked by a test). Each shortcut appends a Dictionary to inbox.jsonl and
+posts the same keys as Request Body JSON fields (what a Dictionary sends as a File body isn't documented).
+Action names follow the iOS 26 Shortcuts app. `docs/SETUP-RELAY.md`, `docs/ALERT-FORMATS.md`, README.
 
 ## Verification (milestone 9)
 

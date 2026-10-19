@@ -98,7 +98,7 @@ export const SHORTCUTS = [
       post(KEYS.keypad),
       ...refresh,
     ],
-    after: ['Settings → **Accessibility** → **Touch** → **Back Tap** → **Double Tap** → under Shortcuts, choose **Pitaka Keypad**.'],
+    after: ['In the iPhone **Settings** app: **Accessibility** → **Touch** → **Back Tap** → **Double Tap** → under Shortcuts, choose **Pitaka Keypad**.'],
     test: 'Run it, enter `1`, any category and wallet, and the note `test`. A test never becomes an entry.',
   },
   {
@@ -115,7 +115,7 @@ export const SHORTCUTS = [
       step('Show Notification', 'Type `Sent to Pitaka: `, insert **Said**.'),
       post(KEYS.text),
     ],
-    after: ['Settings → **Accessibility** → **Touch** → **Back Tap** → **Triple Tap** → under Shortcuts, choose **Pitaka Text**.'],
+    after: ['In the iPhone **Settings** app: **Accessibility** → **Touch** → **Back Tap** → **Triple Tap** → under Shortcuts, choose **Pitaka Text**.'],
     test: 'Run it and type `test`.',
   },
   {
@@ -182,7 +182,7 @@ export const SHORTCUTS = [
 export const shortcut = (id) => SHORTCUTS.find((s) => s.id === id);
 
 export const BEFORE = [
-  'Set up your relay first (Settings → Inbox relay). Each shortcut needs its address and write token.',
+  'Set up your relay first (in Pitaka: Settings → Inbox relay). Each shortcut needs its address and write token.',
   'In the Files app, open **iCloud Drive → Shortcuts** and make a folder named `Pitaka`. Your shortcuts keep their lists and a backup copy of everything they send there. Their file actions use that **Shortcuts** folder: if one shows a different Folder, tap it and choose iCloud Drive → Shortcuts.',
   'Names below are the actions as the iOS 26 Shortcuts app shows them. Find each one with the search field at the bottom of the shortcut editor. A new action goes at the end; drag it to move it.',
   'When you tap a field, the bar above the keyboard has **Select Variable** and items like **Current Date** and **Shortcut Input** (swipe it sideways for more). Tap a variable after inserting it to choose a format or a detail.',
@@ -239,7 +239,7 @@ export function guideMarkdown() {
   }
   out.push('## When something doesn\'t arrive', '',
     '- **No relay, or offline:** everything is still in iCloud Drive/Shortcuts/Pitaka/inbox.jsonl. In Pitaka: Settings → Inbox and alerts → **Import from Files**. Nothing is added twice.',
-    '- **Shortcuts shows an error at Get Contents of URL:** check the relay address and write token (Settings → Inbox relay → Copy), and that you\'re online. The backup copy was already saved.',
+    '- **Shortcuts shows an error at Get Contents of URL:** check the relay address and write token (in Pitaka: Settings → Inbox relay → Copy), and that you\'re online. The backup copy was already saved.',
     '- **The shortcut runs, but Test never shows ✓:** the write token probably changed (you made a new one, or paired again). Paste the new one into each Get Contents of URL.',
     '- **Choose from List has nothing to choose:** the last fetch of your lists failed, usually because of the write token. Fix the token in both Get Contents of URL actions, then in the Files app delete iCloud Drive → Shortcuts → Pitaka → config.json. The next run uses the lists typed into the shortcut and fetches them again.',
     '- **An alert landed in Review as "Unknown format":** tap **Teach** and mark the amount, merchant and balance. Pitaka reads that format from then on.',
