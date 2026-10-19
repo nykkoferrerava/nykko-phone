@@ -15,7 +15,7 @@ export const ui = {
 };
 
 export const pw = (n) => peso(n, { whole: true });
-export const icon = (name) => `<svg class="ti" aria-hidden="true" focusable="false"><use href="#i-${name}"/></svg>`;
+export const icon = (name) => `<svg class="ti" aria-hidden="true" focusable="false"><use href="#i-${/^[a-z0-9-]+$/.test(name) ? name : 'info'}"/></svg>`;
 export const accounts = () => db.accounts || [];
 export const isStandalone = () => !!navigator.standalone || matchMedia('(display-mode: standalone)').matches;
 

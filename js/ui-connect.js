@@ -115,7 +115,7 @@ function pairedSheet(from) {
     <h3>Status</h3>
     <div class="list card" id="relay-status">
       <div class="row"><span class="grow"><span class="title">Last collected</span><span class="meta">${esc(whenText(i.lastOk))}${i.lastError ? ` · last try failed: ${esc(i.lastError)}` : ''}</span></span></div>
-      <div class="row"><span class="grow"><span class="title">Waiting on the relay</span><span class="meta" id="relay-pending">${st ? `${st.pending} item${st.pending === 1 ? '' : 's'}` : 'Checking…'}</span></span></div>
+      <div class="row"><span class="grow"><span class="title">Waiting on the relay</span><span class="meta" id="relay-pending">${st ? esc(pendingText(st.pending)) : 'Checking…'}</span></span></div>
     </div>
     <div class="actions">
       <button type="button" class="btn primary" data-action="relayCheck">${icon('refresh')}Check now</button>
@@ -129,13 +129,15 @@ function pairedSheet(from) {
   refreshStatus();
 }
 
+// The relay's answer is never trusted as markup: only a whole number gets through.
+const pendingText = (n) => { const k = Math.max(0, Math.trunc(Number(n)) || 0); return `${k} item${k === 1 ? '' : 's'}`; };
 async function refreshStatus() {
   try {
     conn.status = await Sync.status();
     conn.statusAt = Date.now();
   } catch (e) { conn.status = null; const el = $('#relay-pending'); if (el) el.textContent = relayMessage(e); return; }
   const el = $('#relay-pending');
-  if (el && conn.status) el.textContent = `${conn.status.pending} item${conn.status.pending === 1 ? '' : 's'}`;
+  if (el && conn.status) el.textContent = pendingText(conn.status.pending);
 }
 
 // ------------------------------------------------------------------ collecting

@@ -8,7 +8,7 @@
 //
 // Bump VERSION whenever app files change. When you ADD a file the app loads
 // (for example a new js/ui-*.js module), list it in FILES too.
-const VERSION = 'pitaka-v2';
+const VERSION = 'pitaka-v3';
 const PREFIX = 'pitaka-'; // only touch our own caches (a github.io origin is shared by all your repos)
 const FILES = [
   './',

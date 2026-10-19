@@ -117,7 +117,8 @@ export async function selfTest() {
 
 export async function status() {
   if (!paired()) return null;
-  return R.status(state.relay);
+  const r = await R.status(state.relay);
+  return { pending: Math.max(0, Math.trunc(Number(r?.pending)) || 0), pairedAt: String(r?.pairedAt || ''), configAt: r?.configAt ? String(r.configAt) : null };
 }
 
 // A new write token: every shortcut needs it pasted in again.
