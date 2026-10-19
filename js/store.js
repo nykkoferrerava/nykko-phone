@@ -2,7 +2,7 @@
 // anywhere: the inbox relay only hands encrypted items *to* the phone (see relay/).
 // No DOM access in this file: it runs unchanged under Node for the logic tests.
 import { uid, today, addDays, daysBetween, advance, retreat, round2, PER_MONTH, parseISO, toISO, monthKey, peso, FREQS, DEFAULT_DUE_DAYS } from './util.js';
-import { defaultAdapter, legacyAdapter, blockedAdapter, readLegacy, rescueLegacy, LEGACY_KEY, MIGRATED_KEY, lsGet, lsSet, lsDel } from './storage.js';
+import { defaultAdapter, legacyAdapter, blockedAdapter, readLegacy, rescueLegacy, dropRescued, LEGACY_KEY, MIGRATED_KEY, lsGet, lsSet, lsDel } from './storage.js';
 import { compileTemplate, TEMPLATE_KINDS } from './alerts.js';
 
 const VERSION = 3;
@@ -796,6 +796,7 @@ export function resetAll() {
   gen++;
   if (adapter.kind !== 'localstorage') lsDel(LEGACY_KEY);
   lsDel(MIGRATED_KEY);
+  dropRescued();
   db = blank();
   meta = { schema: VERSION, createdAt: new Date().toISOString() };
   ord.txns = new Map();

@@ -218,6 +218,15 @@ export function readLegacy(ls = globalThis.localStorage) {
   return ok ? { state: 'ok', raw, data } : { state: 'unreadable', raw };
 }
 
+// Erase all data: the rescued copies go too.
+export function dropRescued(ls = globalThis.localStorage) {
+  try {
+    const keys = [];
+    for (let i = 0; i < ls.length; i++) { const k = ls.key(i); if (k && k.startsWith(`${LEGACY_KEY}.unreadable-`)) keys.push(k); }
+    for (const k of keys) ls.removeItem(k);
+  } catch { /* blocked: nothing could be kept there either */ }
+}
+
 // Keeps a copy of unreadable v2 data under its own key (once: an identical copy is reused).
 export function rescueLegacy(raw, ls = globalThis.localStorage) {
   try {

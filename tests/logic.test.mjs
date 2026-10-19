@@ -390,6 +390,15 @@ describe('store: load, sanitize and migration', () => {
     assert.equal(localStorage.getItem(r.rescuedKey), raw);
     assert.equal(localStorage.getItem('pitaka.data'), raw);
   });
+  test('Erase all data also removes the rescued copies of unreadable data', async () => {
+    await v2Phone('{"txns":[{"id":"a"');
+    console.error = () => {};
+    let r; try { r = await S.load(); } finally { console.error = quiet; }
+    assert.ok(localStorage.getItem(r.rescuedKey));
+    S.resetAll(); await S.flush();
+    const left = []; for (let i = 0; i < localStorage.length; i++) left.push(localStorage.key(i));
+    assert.deepEqual(left.filter((k) => k.startsWith('pitaka.data')), []);
+  });
   test('BUG-03: JSON that is not a Pitaka object ([], null, 42) is rescued too', async () => {
     for (const raw of ['[]', 'null', '42', '"hello"']) {
       await v2Phone(raw);
