@@ -102,7 +102,7 @@ export function idbAdapter(name = 'pitaka', idb = globalThis.indexedDB) {
         const stores = Object.fromEntries(names.map((n) => [n, t.objectStore(n)]));
         let out;
         t.oncomplete = () => resolve(out);
-        t.onerror = () => reject(t.error);
+        t.onerror = () => reject(t.error || Object.assign(new Error('Transaction failed'), { name: 'UnknownError' }));
         t.onabort = () => reject(t.error || Object.assign(new Error('Transaction aborted'), { name: 'AbortError' }));
         try { out = fn(stores); } catch (e) { try { t.abort(); } catch { /* already finished */ } reject(e); }
       });
