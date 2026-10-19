@@ -135,7 +135,7 @@ function rowHtml(r) {
   const amt = r.amount ? `${r.kind === 'income' ? '+' : '−'}${peso(r.amount)}` : '—';
   const can = importable(r);
   return `<li class="row stmt-row ${esc(s)}">
-    <input type="checkbox" class="stmt-check" data-stmt-row="${r.i}" ${can && included(r) ? 'checked' : ''} ${can ? '' : 'disabled'} aria-label="Import ${esc(r.merchant || 'this row')} ${esc(amt)}">
+    <label class="stmt-hit"><input type="checkbox" class="stmt-check" data-stmt-row="${r.i}" ${can && included(r) ? 'checked' : ''} ${can ? '' : 'disabled'} aria-label="Import ${esc(r.merchant || 'this row')} ${esc(amt)}"></label>
     <span class="grow"><span class="title">${esc(r.merchant || '(no description)')}</span><span class="meta">${r.date ? esc(fmtDate(r.date)) : 'No date'} ${chip}</span></span>
     <span class="num ${r.kind === 'income' ? 'pos' : ''}">${esc(amt)}</span></li>`;
 }
