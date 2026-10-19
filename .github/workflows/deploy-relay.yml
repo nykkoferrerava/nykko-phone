@@ -1,9 +1,14 @@
-# Deploys the Pitaka inbox relay (relay/worker.js) to your Cloudflare account.
-# Run it from the Actions tab ("Deploy relay" -> Run workflow); it also runs when relay/ changes on main.
-# Repository secrets it needs (Settings -> Secrets and variables -> Actions), see docs/SETUP-RELAY.md:
-#   CLOUDFLARE_API_TOKEN   an API token from the "Edit Cloudflare Workers" template, plus D1 Edit
+# Deploys the Pitaka inbox relay (relay/worker.js) to your Cloudflare account. See docs/SETUP-RELAY.md.
+# Run it from the Actions tab ("Deploy relay" -> Run workflow). It also runs when relay/ changes on main;
+# without the secrets below that run skips quietly (for a relay made in the Cloudflare dashboard).
+# Safe to run again: it finds the same database and replaces the Worker's code and settings.
+#
+# Repository secrets (Settings -> Secrets and variables -> Actions -> Secrets):
+#   CLOUDFLARE_API_TOKEN   an API token from the "Edit Cloudflare Workers" template, plus Account · D1 · Edit
 #   CLOUDFLARE_ACCOUNT_ID  your Cloudflare account ID
-#   RELAY_ADMIN_SECRET     the setup secret Pitaka made for you (16+ characters)
+#   RELAY_ADMIN_SECRET     the setup secret Pitaka made for you (16 characters or more)
+# Optional repository variable (same page -> Variables):
+#   RELAY_ALLOWED_ORIGIN   your Pitaka address, if it isn't https://<your GitHub name>.github.io
 name: Deploy relay
 
 on:
@@ -19,68 +24,218 @@ concurrency:
   group: deploy-relay
   cancel-in-progress: false
 
+env:
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+  RELAY_ADMIN_SECRET: ${{ secrets.RELAY_ADMIN_SECRET }}
+
 jobs:
-  deploy:
+  check:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 2
+    outputs:
+      ready: ${{ steps.secrets.outputs.ready }}
+    steps:
+      - name: Check the repository secrets
+        id: secrets
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          missing=()
+          for s in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID RELAY_ADMIN_SECRET; do
+            [ -n "${!s}" ] || missing+=("$s")
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            if [ "$EVENT" = push ]; then
+              echo "::notice::Skipped: the relay's repository secrets aren't set (${missing[*]}). That's fine if you made the relay in the Cloudflare dashboard."
+              echo "ready=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            for s in "${missing[@]}"; do echo "::error::Add the $s repository secret: Settings → Secrets and variables → Actions → New repository secret (docs/SETUP-RELAY.md, Way 2)."; done
+            exit 1
+          fi
+          bad=0
+          if ! [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[0-9a-f]{32}$ ]]; then
+            echo "::error::CLOUDFLARE_ACCOUNT_ID should be 32 letters and digits with no spaces. Copy it again from Cloudflare: Workers & Pages → Account details → Account ID."; bad=1
+          fi
+          if [[ "$CLOUDFLARE_API_TOKEN" =~ [[:space:]] ]]; then
+            echo "::error::CLOUDFLARE_API_TOKEN has a space or line break in it. Paste the token again with nothing around it."; bad=1
+          fi
+          secret=$(printf '%s' "$RELAY_ADMIN_SECRET" | tr -d '[:space:]')
+          if [ "${#secret}" -lt 16 ]; then
+            echo "::error::RELAY_ADMIN_SECRET must be 16 characters or more. In Pitaka: Settings → Inbox relay → Make one → Copy."; bad=1
+          fi
+          [ "$bad" = 0 ] || exit 1
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: check
+    if: needs.check.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
+        shell: bash # -e and -o pipefail: a failing wrangler fails the step, even piped into tee
         working-directory: relay
     env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      RELAY_ADMIN_SECRET: ${{ secrets.RELAY_ADMIN_SECRET }}
+      RELAY_ALLOWED_ORIGIN: ${{ vars.RELAY_ALLOWED_ORIGIN }}
+      # Where a new database is made. Without a hint D1 picks a place near the computer creating it,
+      # which here is GitHub's (usually in the US), far from the Philippines.
+      D1_LOCATION: apac
       WRANGLER_SEND_METRICS: 'false'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
 
-      - name: Check the repository secrets
+      - name: Check the API token and your workers.dev subdomain
+        id: cf
         run: |
-          missing=0
-          for s in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID RELAY_ADMIN_SECRET; do
-            if [ -z "${!s}" ]; then echo "::error::Add the $s repository secret first (docs/SETUP-RELAY.md)."; missing=1; fi
-          done
-          if [ -n "$RELAY_ADMIN_SECRET" ] && [ ${#RELAY_ADMIN_SECRET} -lt 16 ]; then echo "::error::RELAY_ADMIN_SECRET must be 16 characters or more."; missing=1; fi
-          exit $missing
+          code=$(curl -sS -o cf.json -w '%{http_code}' -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain") || {
+            echo "::error::Couldn't reach Cloudflare. Run the workflow again in a few minutes."; exit 1; }
+          # shellcheck disable=SC2016 # ${...} below is JavaScript, not the shell
+          node -e '
+            const fs = require("fs");
+            let r = {};
+            try { r = JSON.parse(fs.readFileSync("cf.json", "utf8")); } catch {}
+            const code = process.argv[1];
+            const acct = process.env.CLOUDFLARE_ACCOUNT_ID;
+            const err = (r.errors || [])[0] || {};
+            if (r.success && r.result && r.result.subdomain) {
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, `subdomain=${r.result.subdomain}\n`);
+              console.log(`Your workers.dev subdomain: ${r.result.subdomain}.workers.dev`);
+            } else if (err.code === 10007) {
+              console.log(`::error::Your Cloudflare account has no workers.dev subdomain yet. Open https://dash.cloudflare.com/${acct}/workers/onboarding (or Workers & Pages in the dashboard), choose one, then run this workflow again.`);
+              process.exit(1);
+            } else if (code === "401" || code === "403" || code === "404" || code === "400") {
+              console.log(`::error::Cloudflare did not accept the API token for this account (${code}: ${err.message || "no message"}). Check CLOUDFLARE_API_TOKEN (made from the Edit Cloudflare Workers template, plus Account · D1 · Edit) and CLOUDFLARE_ACCOUNT_ID.`);
+              process.exit(1);
+            } else {
+              console.log(`::error::Cloudflare answered ${code}: ${err.message || "no message"}. Run the workflow again in a few minutes.`);
+              process.exit(1);
+            }
+          ' "$code"
+
+      - name: Allow your Pitaka address
+        run: |
+          owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          origin="${RELAY_ALLOWED_ORIGIN:-https://$owner.github.io}"
+          if ! [[ "$origin" =~ ^https://[A-Za-z0-9.:/,\ -]+$ ]]; then
+            echo "::error::The RELAY_ALLOWED_ORIGIN variable should look like https://yourname.github.io (several: separate them with commas)."
+            exit 1
+          fi
+          sed -i "s#^ALLOWED_ORIGIN = .*#ALLOWED_ORIGIN = \"$origin\"#" wrangler.toml
+          grep '^ALLOWED_ORIGIN' wrangler.toml
 
       - name: Install wrangler (pinned)
-        run: npm install --no-save --no-audit --no-fund wrangler@4.139.0
+        run: npm install --no-save --no-package-lock --no-audit --no-fund wrangler@4.139.0
 
       - name: Find or create the D1 database
         run: |
           find_db() {
-            npx wrangler d1 list --json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const l=JSON.parse(s.slice(s.indexOf('[')));const d=l.find(x=>x.name==='pitaka-relay');process.stdout.write(d?(d.uuid||d.database_id||''):'')})"
+            if ! npx wrangler d1 list --json > d1.json 2> d1.err; then
+              cat d1.err
+              echo "::error::Couldn't list your D1 databases. Check that the API token also has Account · D1 · Edit (docs/SETUP-RELAY.md, Way 2, step 1)."
+              exit 1
+            fi
+            # `wrangler d1 list --json` prints the API's list: [{ "uuid": "...", "name": "pitaka-relay", ... }]
+            id=$(node -e '
+              let list = [];
+              try { const s = require("fs").readFileSync("d1.json", "utf8"); list = JSON.parse(s.slice(Math.max(0, s.indexOf("[")))); } catch {}
+              const db = Array.isArray(list) ? list.find((x) => x && x.name === "pitaka-relay") : null;
+              process.stdout.write((db && db.uuid) || "");
+            ')
           }
-          id=$(find_db)
+          find_db
           if [ -z "$id" ]; then
-            npx wrangler d1 create pitaka-relay
-            id=$(find_db)
+            echo "Creating the pitaka-relay D1 database (location hint: $D1_LOCATION)"
+            if ! npx wrangler d1 create pitaka-relay --location "$D1_LOCATION" > d1-create.log 2>&1; then
+              cat d1-create.log
+              if grep -q "already exists" d1-create.log; then
+                echo "It was just made by another run; using it."
+              elif grep -q "maximum number of D1 databases" d1-create.log; then
+                echo "::error::Your Cloudflare account already has as many D1 databases as the free plan allows. Delete one you don't use (Storage & databases → D1 SQL database), then run this again."
+                exit 1
+              else
+                echo "::error::Couldn't create the D1 database. Check that the API token has Account · D1 · Edit."
+                exit 1
+              fi
+            else
+              cat d1-create.log
+            fi
+            find_db
           fi
-          if [ -z "$id" ]; then echo "::error::Couldn't create or find the pitaka-relay D1 database. Check that the API token has D1 Edit."; exit 1; fi
+          if ! [[ "$id" =~ ^[0-9a-f-]{36}$ ]]; then
+            echo "::error::Couldn't find the pitaka-relay database after creating it. Run the workflow again."
+            exit 1
+          fi
           sed -i "s/^database_id = .*/database_id = \"$id\"/" wrangler.toml
-          echo "Using D1 database $id"
+          echo "Using the pitaka-relay D1 database ($id)"
 
-      - name: Allow your GitHub Pages address
+      - name: Deploy the Worker with its setup secret
+        env:
+          SUBDOMAIN: ${{ steps.cf.outputs.subdomain }}
         run: |
-          owner=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
-          sed -i "s#^ALLOWED_ORIGIN = .*#ALLOWED_ORIGIN = \"https://$owner.github.io\"#" wrangler.toml
-          grep '^ALLOWED_ORIGIN' wrangler.toml
-
-      - name: Deploy the Worker
-        run: |
-          npx wrangler deploy | tee deploy.log
-          echo "RELAY_URL=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' deploy.log | head -1)" >> "$GITHUB_ENV"
-
-      - name: Set the setup secret
-        run: printf '%s' "$RELAY_ADMIN_SECRET" | npx wrangler secret put ADMIN_SECRET
+          # The secret goes up with the code in one step (a new Worker can't have one set in advance).
+          # The file is readable only by this job and deleted when the step ends.
+          secrets="$RUNNER_TEMP/relay-secrets.json"
+          trap 'rm -f "$secrets"' EXIT
+          (umask 077 && node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ ADMIN_SECRET: process.env.RELAY_ADMIN_SECRET.trim() }))' "$secrets")
+          export WRANGLER_OUTPUT_FILE_PATH="$RUNNER_TEMP/wrangler-output.jsonl"
+          if ! npx wrangler deploy --secrets-file "$secrets" 2>&1 | tee deploy.log; then
+            if grep -q "workers.dev subdomain" deploy.log; then
+              echo "::error::Your Cloudflare account needs a workers.dev subdomain first: Workers & Pages in the dashboard, choose one, then run this again."
+            else
+              echo "::error::The deploy didn't go through; the lines above say why."
+            fi
+            exit 1
+          fi
+          # The address, from wrangler's own record of the deploy; failing that, its log or the subdomain.
+          url=$(node -e '
+            const fs = require("fs");
+            let out = "";
+            try {
+              for (const line of fs.readFileSync(process.argv[1], "utf8").split("\n")) {
+                if (!line.trim()) continue;
+                const e = JSON.parse(line);
+                if (e.type === "deploy") out = (e.targets || []).find((t) => /^https:\/\/[a-z0-9.-]+\.workers\.dev$/.test(t)) || out;
+              }
+            } catch {}
+            process.stdout.write(out);
+          ' "$WRANGLER_OUTPUT_FILE_PATH")
+          [ -n "$url" ] || url=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' deploy.log | head -n 1 || true)
+          [ -n "$url" ] || { [ -z "$SUBDOMAIN" ] || url="https://pitaka-relay.$SUBDOMAIN.workers.dev"; }
+          echo "RELAY_URL=$url" >> "$GITHUB_ENV"
 
       - name: Check the relay answers
         run: |
-          if [ -z "$RELAY_URL" ]; then echo "::notice::Deployed. Find its address in Cloudflare: Workers & Pages -> pitaka-relay."; exit 0; fi
-          sleep 5
-          curl -fsS --retry 3 --retry-delay 5 "$RELAY_URL/"; echo
-          echo "::notice::Your relay address is $RELAY_URL. In Pitaka open Settings -> Inbox relay and paste it with the setup secret."
+          if [ -z "$RELAY_URL" ]; then
+            echo "::warning::Deployed, but its address wasn't in wrangler's output. Find it in Cloudflare: Workers & Pages → pitaka-relay."
+            exit 0
+          fi
+          status=000
+          for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            status=$(curl -sS -o answer.json -w '%{http_code}' --max-time 10 "$RELAY_URL/" 2>/dev/null || true)
+            if [ "$status" = 200 ] && grep -q '"service":"pitaka-relay"' answer.json; then break; fi
+            sleep 10
+          done
+          if [ "$status" = 200 ]; then
+            cat answer.json; echo
+            echo "::notice title=Your relay address::$RELAY_URL. In Pitaka open Settings → Inbox relay and paste it with your setup secret."
+            {
+              echo "## Your relay is ready"
+              echo
+              echo "Address: **$RELAY_URL**"
+              echo
+              echo "In Pitaka: Settings → Inbox relay. Paste the address and your setup secret, then Pair."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            [ -f answer.json ] && cat answer.json && echo
+            echo "::warning::Deployed to $RELAY_URL, but it didn't answer yet ($status). A new workers.dev address can take a few minutes: open it in Safari later; it should show {\"ok\":true,\"service\":\"pitaka-relay\",...}."
+          fi

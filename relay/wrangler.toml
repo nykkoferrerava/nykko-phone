@@ -17,3 +17,12 @@ database_id = "00000000-0000-0000-0000-000000000000"
 
 [vars]
 ALLOWED_ORIGIN = "https://nykkoferrerava.github.io"
+
+# A deploy without the setup secret stops instead of going live unpairable. The workflow sends it with
+# `wrangler deploy --secrets-file`; for `wrangler dev`, put it in .dev.vars.
+[secrets]
+required = ["ADMIN_SECRET"]
+
+# Once a day, delete items nobody collected within 30 days. 19:17 UTC is 03:17 in Manila.
+[triggers]
+crons = ["17 19 * * *"]
