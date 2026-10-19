@@ -55,6 +55,33 @@ describe('categories', () => {
     throwsField(() => S.mergeCategory('nope', food.id), 'intoId');
     await S.flush();
   });
+  test('merging two built-in categories keeps both sets of synonyms and adds the budgets together', async () => {
+    fresh();
+    const food = cat('Food'), groc = cat('Groceries');
+    S.saveCategory({ id: food.id, name: 'Food', emoji: food.emoji, limit: 3000 });
+    S.saveCategory({ id: groc.id, name: 'Groceries', emoji: groc.emoji, limit: 2000 });
+    S.mergeCategory(groc.id, food.id);
+    const f = cat('Food');
+    assert.equal(f.limit, 5000);
+    const { parseQuick } = await import('../js/quickparse.js');
+    const ctx = { categories: S.db.categories, accounts: S.db.accounts, cards: [], defaultAccountId: S.defaultAccountId() };
+    assert.equal(parseQuick('puregold 500', ctx).categoryId, f.id, 'a Groceries synonym');
+    assert.equal(parseQuick('jollibee 289', ctx).categoryId, f.id, 'a Food synonym');
+    // Restored from a backup, the merged category still has both.
+    await S.replaceAll(JSON.parse(S.exportBackup()));
+    assert.deepEqual(cat('Food').also, ['groceries']);
+    assert.equal(parseQuick('puregold 500', { ...ctx, categories: S.db.categories }).categoryId, f.id);
+  });
+  test('merged keywords are kept whole when they run past the limit', () => {
+    fresh();
+    const words = (p, n) => Array.from({ length: n }, (_, i) => `${p}${i}x`).join(', ');
+    const a = S.saveCategory({ name: 'Aa', emoji: '🅰️', keywords: words('alpha', 12) });
+    const b = S.saveCategory({ name: 'Bb', emoji: '🅱️', keywords: words('bravo', 12) });
+    S.mergeCategory(b.id, a.id);
+    const kw = S.db.categories.find((c) => c.id === a.id).keywords.split(', ');
+    assert.ok(kw.join(', ').length <= 200);
+    for (const k of kw) assert.match(k, /^(alpha|bravo)\d+x$|^bb$/, `no cut-off keyword: ${k}`);
+  });
 });
 
 describe('wallet balance fixes', () => {

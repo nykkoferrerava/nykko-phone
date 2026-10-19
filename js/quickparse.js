@@ -42,14 +42,16 @@ export const WALLET_ALIASES = [
 ];
 const CARD_WORDS = ['card', 'credit card', 'cc', 'credit'];
 
-const words = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9&+.'-]+/g, ' ').trim();
+// Dots, apostrophes and hyphens count only inside a word ("coins.ph", "7-eleven"), not at its edges ("gcash.").
+const words = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9&+.'-]+/g, ' ').replace(/(^|\s)[.'-]+|[.'-]+(?=\s|$)/g, '$1').trim();
 const hasPhrase = (text, phrase) => ` ${words(text)} `.includes(` ${words(phrase)} `);
 export const titleCase = (s) => String(s || '').replace(/\b([a-z])/g, (c) => c.toUpperCase());
 
 // ---------------------------------------------------------------- amounts
 // ₱1,200 · 1,200.50 · 1.2k · 2k · php 500 · p500 · 500php · 500 pesos. Phone numbers, long references,
-// dates and words with digits (7-eleven, 13th) are not amounts.
-const AMOUNT_RE = /(?<![\w./-])(?:(₱|php|p)\s?)?(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)(\s?k)?(?:\s?(php|pesos?|peso))?(?![\w/-]|\.\d)/gi;
+// dates and words with digits (7-eleven, 13th) are not amounts. Nor is a part of a mistyped number
+// ("12,00", "1,2k"): a digit and a comma right before it, or a comma and a digit right after it.
+const AMOUNT_RE = /(?<![\w./-]|\d,)(?:(₱|php|p)\s?)?(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)(\s?k)?(?:\s?(php|pesos?|peso))?(?![\w/-]|[.,]\d)/gi;
 export function findAmounts(text) {
   const out = [];
   for (const m of String(text || '').matchAll(AMOUNT_RE)) {
@@ -66,7 +68,7 @@ export function findAmounts(text) {
 }
 
 // ---------------------------------------------------------------- categories
-// ctx.categories: [{ id, name, emoji, key, keywords, hidden }]. Your keywords beat names, names beat synonyms.
+// ctx.categories: [{ id, name, emoji, key, also, keywords, hidden }]. Your keywords beat names, names beat synonyms.
 function matchCategory(text, categories) {
   const hits = [];
   for (const c of categories) {
@@ -81,7 +83,7 @@ function matchCategory(text, categories) {
         for (const t of words(text).split(' ')) if (t.length >= 4 && (t.startsWith(stem) || stem.startsWith(t.replace(/(ies|es|s|y)$/, '')))) hits.push({ c, rank: 1.5, word: t });
       }
     }
-    for (const syn of SYNONYMS[c.key] || []) if (hasPhrase(text, syn) || hasPhrase(text, `${syn}s`)) hits.push({ c, rank: 1 + syn.length / 100, word: hasPhrase(text, syn) ? syn : `${syn}s` });
+    for (const syn of [c.key, ...(c.also || [])].flatMap((k) => SYNONYMS[k] || [])) if (hasPhrase(text, syn) || hasPhrase(text, `${syn}s`)) hits.push({ c, rank: 1 + syn.length / 100, word: hasPhrase(text, syn) ? syn : `${syn}s` });
   }
   if (!hits.length) return { category: null, words: [], conflict: false };
   hits.sort((a, b) => b.rank - a.rank);

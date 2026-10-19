@@ -152,6 +152,73 @@ describe('storage: every change is all-or-nothing', () => {
     restore();
     assert.equal(JSON.stringify(S.db), before);
   });
+  test('erase while an earlier save is still writing: if the erase fails, memory equals the disk', async () => {
+    fresh(); const c = card(); await S.flush();
+    const g = gated(store); S.useAdapter(g);
+    const t = spend(150, { cardId: c.id });
+    const w1 = await g.next(); // the entry is on its way to the disk
+    S.resetAll();
+    const pending = S.flush();
+    w1.pass();
+    const w2 = await g.next();
+    assert.equal(w2.ops.replace, true, 'the erase');
+    w2.fail('SecurityError');
+    await assert.rejects(pending, (e) => e instanceof S.StoreError);
+    S.useAdapter(store);
+    assert.ok(S.txn(t.id), 'the saved entry is back in memory, as it is on disk');
+    assert.equal(S.debt(c.id).balance, 10150);
+    assert.equal(stable(memory()), stable(disk()));
+    // The same when the entry was edited again after its save started.
+    S.useAdapter(g);
+    S.saveTxn({ id: t.id, kind: 'expense', amount: 200, date: '2026-10-13', cardId: c.id });
+    const w3 = await g.next();
+    S.saveTxn({ id: t.id, kind: 'expense', amount: 300, date: '2026-10-13', cardId: c.id }); // not written yet
+    S.resetAll();
+    const again = S.flush();
+    w3.pass();
+    (await g.next()).fail('SecurityError');
+    await assert.rejects(again);
+    S.useAdapter(store);
+    assert.equal(S.txn(t.id).amount, 200, 'what the disk holds');
+    assert.equal(S.debt(c.id).balance, 10200);
+    assert.equal(stable(memory()), stable(disk()));
+    // Two erases in a row: the first reaches the disk, the second fails.
+    S.useAdapter(g);
+    S.resetAll();
+    const first = await g.next();
+    S.resetAll();
+    const both = S.flush();
+    first.pass();
+    (await g.next()).fail('SecurityError');
+    await assert.rejects(both);
+    S.useAdapter(store);
+    assert.equal(S.db.txns.length, 0, 'the first erase is on disk, so nothing comes back');
+    assert.equal(stable(memory()), stable(disk()));
+  });
+  test('a change made while a restore is being written never lands on top of the restored data', async () => {
+    fresh(); const gc = S.saveAccount({ name: 'GCash', kind: 'ewallet' }); spend(5, { accountId: gc.id }); await S.flush();
+    const backup = { ...JSON.parse(S.exportBackup()), accounts: [{ id: 'bk-cash', name: 'Cash', kind: 'cash', opening: 0 }], txns: [{ id: 'bk1', kind: 'income', amount: 700, date: '2026-10-01', accountId: 'bk-cash' }] };
+    const queue = [];
+    const tick = () => new Promise((r) => setImmediate(r));
+    S.useAdapter({ ...store, write: (ops) => new Promise((resolve, reject) => queue.push({ ops, pass: () => store.write(ops).then(resolve, reject) })) });
+    const restoring = S.replaceAll(backup);
+    while (!queue.length) await tick();
+    const w = queue.shift();
+    assert.equal(w.ops.replace, true, 'the restore is on its way');
+    spend(42, { accountId: gc.id }); // an inbox pull that finishes meanwhile, on the data being replaced
+    let outcome = 'waiting';
+    S.flush().then(() => { outcome = 'saved'; }, () => { outcome = 'not saved'; });
+    await tick();
+    await w.pass();
+    await restoring;
+    for (let i = 0; i < 20; i++) { await tick(); while (queue.length) await queue.shift().pass(); }
+    S.useAdapter(store);
+    assert.equal(outcome, 'not saved', 'so the relay keeps its items, and they come again onto the restored data');
+    assert.deepEqual(S.db.txns.map((t) => t.id), ['bk1']);
+    assert.deepEqual(S.db.accounts.map((a) => a.id), ['bk-cash']);
+    const d = store.dump();
+    assert.deepEqual([d.core.accounts, d.core.settings, d.txns], clone([S.db.accounts, S.db.settings, S.db.txns]), "the old wallets and settings weren't written over the backup");
+  });
   test('property: random changes and random failures, memory always equals the disk afterwards', async () => {
     let seed = 1234; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
     const pick = (arr) => arr[Math.floor(rnd() * arr.length)];
@@ -299,6 +366,39 @@ describe('storage: v2 -> v3 migration', () => {
     const r = await quiet(() => S.load());
     assert.equal(r.fallback, true);
     assert.equal(S.db.txns.length, 11);
+    S.useAdapter(store);
+  });
+  test('IndexedDB that cannot be opened AFTER the move never opens the old v2 copy in its place', async () => {
+    const broken = { ...store, read: async () => { throw Object.assign(new Error('nope'), { name: 'UnknownError' }); } };
+    await v2Phone(V2_RAW);
+    await S.load(); // the move: v2's key is kept until a later launch checks the copy
+    spend(42); await S.flush(); // only in IndexedDB
+    const S6 = await import(`${APP}/js/store.js?launch=6`);
+    S6.useAdapter(broken);
+    assert.deepEqual(await quiet(() => S6.load()), { ok: false, reason: 'blocked', moved: true }, 'not the stale v2 data, which a later launch would delete');
+    S6.saveTxn({ kind: 'income', amount: 1, date: '2026-10-13' });
+    await assert.rejects(S6.flush(), (e) => e instanceof S6.StoreError);
+    assert.equal(localStorage.getItem('pitaka.data'), V2_RAW, "v2's key is untouched");
+    const S7 = await import(`${APP}/js/store.js?launch=7`);
+    assert.equal((await S7.load()).verified, true);
+    assert.equal(S7.db.txns.length, 12, 'nothing was lost');
+    // Once v2's key is gone, a failed open must not start an empty Pitaka either.
+    const S8 = await import(`${APP}/js/store.js?launch=8`);
+    S8.useAdapter(broken);
+    assert.deepEqual(await quiet(() => S8.load()), { ok: false, reason: 'blocked', moved: true });
+    await S.load();
+  });
+  test('on v2\'s key, entries given an id on load are written back, so editing one never drops another', async () => {
+    const txns = [100, 200, 300].map((amount, i) => ({ kind: 'expense', amount, date: `2026-10-0${i + 2}`, accountId: 'cash1' })); // saved by v2 without ids
+    await v2Phone(JSON.stringify({ version: 2, settings: {}, accounts: [{ id: 'cash1', name: 'Cash', kind: 'cash', opening: 1000, openingDate: '2026-10-01' }], txns }));
+    S.useAdapter({ ...store, read: async () => { throw Object.assign(new Error('nope'), { name: 'UnknownError' }); } });
+    assert.equal((await quiet(() => S.load())).fallback, true);
+    S.saveTxn({ id: S.db.txns[0].id, kind: 'expense', amount: 150, date: '2026-10-02', accountId: 'cash1' });
+    await S.flush();
+    const saved = JSON.parse(localStorage.getItem('pitaka.data'));
+    assert.deepEqual(saved.txns.map((t) => t.amount), [150, 200, 300]);
+    assert.deepEqual(saved.txns.map((t) => t.id), S.db.txns.map((t) => t.id));
+    assert.equal(S.accountBalance('cash1'), 350);
     S.useAdapter(store);
   });
   test('data that vanished after a finished migration is reported, not silently replaced', async () => {

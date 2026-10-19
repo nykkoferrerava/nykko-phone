@@ -23,11 +23,26 @@
   <link rel="icon" type="image/png" href="icons/icon-192.png">
   <script src="js/boot.js"></script>
   <link rel="stylesheet" href="app.css">
+  <!-- Every module Home needs (the static imports of js/app.js), fetched at once instead of one level of
+       imports after another. Modules that load on first use are left out. -->
+  <link rel="modulepreload" href="js/app.js">
   <link rel="modulepreload" href="js/store.js">
-  <link rel="modulepreload" href="js/storage.js">
   <link rel="modulepreload" href="js/util.js">
+  <link rel="modulepreload" href="js/storage.js">
+  <link rel="modulepreload" href="js/alerts.js">
   <link rel="modulepreload" href="js/ui-core.js">
+  <link rel="modulepreload" href="js/ui-fx.js">
   <link rel="modulepreload" href="js/ui-views.js">
+  <link rel="modulepreload" href="js/charts.js">
+  <link rel="modulepreload" href="js/insights.js">
+  <link rel="modulepreload" href="js/ui-review.js">
+  <link rel="modulepreload" href="js/inbox.js">
+  <link rel="modulepreload" href="js/quickparse.js">
+  <link rel="modulepreload" href="js/reconcile.js">
+  <link rel="modulepreload" href="js/sync.js">
+  <link rel="modulepreload" href="js/relay-client.js">
+  <link rel="modulepreload" href="js/ui-lock.js">
+  <link rel="modulepreload" href="js/ui-connect.js">
 </head>
 <body>
   <!-- One icon set for all chrome (24×24, 1.8 stroke, round caps). Paths adapted from Lucide (ISC licence).
@@ -127,7 +142,7 @@
     <div class="lock-inner">
       <div class="logo" aria-hidden="true">₱</div>
       <h2 id="lock-title">Enter PIN</h2>
-      <div id="lock-dots" class="dots" aria-hidden="true"></div>
+      <div id="lock-dots" class="dots" role="img" aria-label="0 of 4 digits entered"></div>
       <p id="lock-err" class="critical-text" role="alert"></p>
       <div class="keypad">
         <button type="button" data-k="1">1</button><button type="button" data-k="2">2</button><button type="button" data-k="3">3</button>

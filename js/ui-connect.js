@@ -8,7 +8,9 @@ import { esc, fmtDate, toISO } from './util.js';
 import { $, ui, icon, openSheet, closeSheet, sheetHead, field, toast, FormProblem, str, haptic, setBanner, clearBanner } from './ui-core.js';
 import { refresh } from './ui-views.js';
 import { announce } from './ui-review.js';
-import { guideCopy } from './ui-guide.js';
+
+// The guide loads on first use and adds its Copy buttons' values here (ui-guide.js imports this file).
+export const guideHooks = { copy: null };
 
 const conn = { adminSecret: '', showWrite: false, status: null, statusAt: 0 };
 
@@ -46,7 +48,7 @@ const COPY = {
   adminSecret: () => conn.adminSecret,
 };
 export function copyValue(key, data = {}) {
-  if (key === 'g') return guideCopy(data);
+  if (key === 'g') return guideHooks.copy?.(data);
   const v = COPY[key]?.();
   if (!v) return toast('Nothing to copy yet');
   return copyText(v, key === 'write' ? 'Write token copied' : key === 'url' ? 'Relay address copied' : 'Copied');
@@ -63,7 +65,8 @@ export function relayMessage(e) {
   switch (e?.code) {
     case 'network': return `Couldn't reach the relay. Check the address and your connection. If it's right, check that ALLOWED_ORIGIN in Cloudflare is ${location.origin}.`;
     case 'origin': return `The relay doesn't accept this address. Set ALLOWED_ORIGIN in Cloudflare to ${location.origin}.`;
-    case 'auth': return Sync.paired() ? 'The relay no longer accepts Pitaka. Was it paired again from somewhere else? Unpair, then pair again.' : "That setup secret isn't the one in Cloudflare (ADMIN_SECRET).";
+    // The relay says when it was paired again or the token was replaced: its words are clearer than ours.
+    case 'auth': return e.reason ? e.message : Sync.paired() ? 'The relay no longer accepts Pitaka. Was it paired again from somewhere else? Unpair, then pair again.' : "That setup secret isn't the one in Cloudflare (ADMIN_SECRET).";
     case 'unpaired': return 'The relay has no pairing (its database was reset?). Unpair, then pair again.';
     case 'busy': return 'The relay is busy. Wait a minute and try again.';
     case 'server': return e.message || 'The relay had a problem.';
@@ -222,7 +225,7 @@ export const CONNECT_FORMS = {
     if (!secret) throw new FormProblem('Enter the setup secret', 'secret');
     let p;
     try { p = await Sync.pairWith(url, secret, { keepWrite: str(f, 'keepWrite', 60) }); } catch (e) {
-      throw new FormProblem(relayMessage(e), e?.code === 'auth' ? 'secret' : e?.code === 'invalid' && /token/.test(e.message) ? 'keepWrite' : 'url');
+      throw new FormProblem(relayMessage(e), e?.code === 'auth' ? 'secret' : e?.code === 'paused' || (e?.code === 'invalid' && /token/.test(e.message)) ? 'keepWrite' : 'url');
     }
     conn.adminSecret = '';
     conn.showWrite = true;

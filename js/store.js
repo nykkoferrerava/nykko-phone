@@ -2,7 +2,7 @@
 // anywhere: the inbox relay only hands encrypted items *to* the phone (see relay/).
 // No DOM access in this file: it runs unchanged under Node for the logic tests.
 import { uid, today, addDays, daysBetween, advance, retreat, round2, PER_MONTH, parseISO, toISO, monthKey, peso, FREQS, DEFAULT_DUE_DAYS } from './util.js';
-import { defaultAdapter, legacyAdapter, blockedAdapter, readLegacy, rescueLegacy, LEGACY_KEY, MIGRATED_KEY, lsGet, lsSet, lsDel } from './storage.js';
+import { defaultAdapter, legacyAdapter, blockedAdapter, readLegacy, rescueLegacy, dropRescued, LEGACY_KEY, MIGRATED_KEY, lsGet, lsSet, lsDel } from './storage.js';
 import { compileTemplate, TEMPLATE_KINDS } from './alerts.js';
 
 const VERSION = 3;
@@ -121,9 +121,17 @@ function shapeCategory(r, strict) {
     limit: v.number(r.limit, { min: 0, max: MAX_AMOUNT }, 'Enter a budget amount, or leave it blank', 'limit'),
   };
   if (CATEGORY_KEYS.includes(r.key)) c.key = r.key;
+  // `also`: built-in keys of categories merged into this one, so their synonyms keep matching.
+  const also = [...new Set(Array.isArray(r.also) ? r.also : [])].filter((k) => CATEGORY_KEYS.includes(k) && k !== c.key);
+  if (also.length) c.also = also;
   if (r.hidden === true) c.hidden = true;
-  const kw = str(r.keywords, 200).toLowerCase().split(/[,;\n]+/).map((x) => x.trim()).filter(Boolean);
-  if (kw.length) c.keywords = [...new Set(kw)].join(', ');
+  // Up to 200 characters of whole keywords (a merge can join more than that).
+  const kw = [];
+  for (const k of new Set(str(r.keywords, 2000).toLowerCase().split(/[,;\n]+/).map((x) => x.trim()).filter(Boolean))) {
+    if ([...kw, k].join(', ').length > 200) break;
+    kw.push(k);
+  }
+  if (kw.length) c.keywords = kw.join(', ');
   return c;
 }
 function shapeReceivable(r, strict) {
@@ -340,7 +348,9 @@ const ord = { txns: new Map(), inbox: new Map() };
 let trk = null; // inside tx(): before-images of records this change touched, by collection
 const freshStaged = () => ({ core: false, meta: false, rewrite: false, clearSecrets: false, txns: new Set(), inbox: new Set() });
 // Undo info back to what storage holds: the core JSON and before-images of records changed since.
-const freshUndo = (core) => ({ core, txns: new Map(), inbox: new Map(), full: null });
+// `full`: the data an erase replaced, kept until the erase is on disk. `gen`: which erase this belongs to.
+let gen = 0; // bumped by resetAll(): a batch taken before it was for the data the erase replaced
+const freshUndo = (core) => ({ core, txns: new Map(), inbox: new Map(), full: null, gen });
 let staged = freshStaged();
 let undo = freshUndo('');
 let writing = false;
@@ -474,26 +484,31 @@ function takeBatch() {
       ops[k] = { put, del };
     }
   }
-  return { ops, coreJ, imgs, rewrite: s.rewrite };
+  return { ops, coreJ, imgs, rewrite: s.rewrite, gen };
 }
 
 // The batch is on disk: it is the new "what storage holds" for the records it wrote.
 function settled(b) {
-  if (b.coreJ !== null) undo.core = b.coreJ;
-  if (b.rewrite) undo.full = null;
+  // A batch taken before an erase updates the data that erase replaced (what comes back if it fails).
+  let u = undo, st = staged;
+  while (u.gen !== b.gen && u.full) { st = u.full.staged; u = u.full.undo; }
+  if (b.coreJ !== null) u.core = b.coreJ;
+  if (b.rewrite) u.full = null; // everything before it is gone from the disk
   for (const k of BIG) {
-    const ids = b.rewrite ? new Set([...undo[k].keys(), ...b.imgs[k].keys()]) : b.imgs[k].keys();
+    const ids = b.rewrite ? new Set([...u[k].keys(), ...b.imgs[k].keys()]) : b.imgs[k].keys();
     for (const id of ids) {
-      if (staged[k].has(id)) undo[k].set(id, b.imgs[k].get(id) ?? null); // changed again since: undo to this batch
-      else undo[k].delete(id);
+      if (st[k].has(id)) u[k].set(id, b.imgs[k].get(id) ?? null); // changed again since: undo to this batch
+      else u[k].delete(id);
     }
   }
 }
 
 // The write failed: memory goes back to what storage holds, everyone waiting hears about it.
 function failed(err, first) {
-  if (undo.full) {
-    const f = undo.full;
+  // Back before every erase that hasn't reached the disk.
+  let f = null;
+  for (let u = undo; u.full; u = u.full.undo) f = u.full;
+  if (f) {
     db = f.db;
     ord.txns = f.ord.txns; ord.inbox = f.ord.inbox; seq = Math.max(seq, f.seq);
     undo = f.undo;
@@ -612,10 +627,13 @@ export async function load() {
     snapIn = await adapter.read();
   } catch (e) {
     console.error('Storage could not be opened', e);
-    if (!canUseLocalStorage()) {
+    // After the move to IndexedDB, v2's key is out of date (or gone). Opening it instead would show old or
+    // no data, and what was entered then would be lost when IndexedDB opens again: save nothing this time.
+    if (!canUseLocalStorage() || lsGet(MIGRATED_KEY)) {
       adapter = blockedAdapter();
       install(blank(), null, { schema: VERSION });
-      return { ok: false, reason: 'blocked' };
+      // moved: the data is in IndexedDB, which didn't open this time (closing and reopening usually helps).
+      return lsGet(MIGRATED_KEY) ? { ok: false, reason: 'blocked', moved: true } : { ok: false, reason: 'blocked' };
     }
     adapter = legacyAdapter();
     return { ...(await loadLegacyMode()), fallback: true };
@@ -702,6 +720,9 @@ async function loadLegacyMode() {
   }
   const data = sanitize(legacy.data);
   install(data, indexOrder(data), isObj(legacy.data._meta) ? legacy.data._meta : { schema: VERSION });
+  // v2's key keeps entries by id: ones that got an id just now are written back, or the next save would
+  // merge every entry that had none into one.
+  if (BIG.some((k) => !sameIds(list(legacy.data[k]), data[k]))) save();
   return { ok: true };
 }
 
@@ -749,21 +770,34 @@ export async function replaceAll(data) {
   if (!adapter) adapter = defaultAdapter();
   const m = { ...meta, schema: VERSION, restoredAt: new Date().toISOString() };
   if (m.migration?.state === 'copied') m.migration = { ...m.migration, state: 'replaced' };
+  // Other saves wait while the restore is written: written after it, they would put the data it replaces
+  // (wallets, settings) back on top of it.
+  while (writing || scheduled) await settle();
+  writing = true;
   try {
     await adapter.write(fullOps(next, m));
   } catch (e) {
+    writing = false;
+    schedule(); // what waited is written now (or just hears there was nothing to write)
     throw storageError(e);
   }
+  writing = false;
+  // Changes made meanwhile were to the replaced data: they are dropped, and whoever waited hears so.
+  const ws = waiters, lost = hasStaged();
+  waiters = [];
   install(next, indexOrder(next), m);
+  for (const w of ws) if (lost) w.reject(Object.assign(new Error('Not saved: a backup was restored at the same time'), { name: 'RestoredError' })); else w.resolve();
   if (adapter.kind !== 'localstorage') lsDel(LEGACY_KEY); // the pre-update copy is out of date now
 }
 
 // Erases everything, including the relay pairing. `await flush()` to know it reached the disk.
 export function resetAll() {
   if (!adapter) adapter = defaultAdapter();
-  const prev = undo.full || { db, ord: { txns: ord.txns, inbox: ord.inbox }, seq, undo };
+  const prev = { db, ord: { txns: ord.txns, inbox: ord.inbox }, seq, undo, staged };
+  gen++;
   if (adapter.kind !== 'localstorage') lsDel(LEGACY_KEY);
   lsDel(MIGRATED_KEY);
+  dropRescued();
   db = blank();
   meta = { schema: VERSION, createdAt: new Date().toISOString() };
   ord.txns = new Map();
@@ -1365,11 +1399,14 @@ export function mergeCategory(fromId, intoId) {
       if (t.categoryId === fromId) { touch('txns', t); t.categoryId = intoId; moved++; }
     }
     for (const b of db.bills) if (b.categoryId === fromId) b.categoryId = intoId;
-    if (!(into.limit > 0) && from.limit > 0) into.limit = from.limit;
+    // The money budgeted for both is now spent in one.
+    if (from.limit > 0) into.limit = Math.min(MAX_AMOUNT, round2((into.limit || 0) + from.limit));
     const kw = [into.keywords, from.keywords, from.name.toLowerCase()].filter(Boolean).join(', ');
-    const merged = shapeCategory({ ...into, keywords: kw }, false);
+    const keys = [into.key, ...(into.also || []), from.key, ...(from.also || [])].filter(Boolean);
+    const merged = shapeCategory({ ...into, keywords: kw, key: into.key || from.key, also: keys }, false);
     if (merged.keywords) into.keywords = merged.keywords;
-    if (!into.key && from.key) into.key = from.key;
+    if (merged.key) into.key = merged.key;
+    if (merged.also) into.also = merged.also;
     db.categories = db.categories.filter((c) => c.id !== fromId);
     if (db.settings.lastCategoryId === fromId) db.settings.lastCategoryId = intoId;
     return moved;
@@ -1687,12 +1724,26 @@ function buildTxn(input, old) {
   return t;
 }
 
+// A lend can't shrink (by an edit or a delete) below what was already paid back of it: the repayment
+// would be for money never lent, and the person would owe a negative amount.
+const owedNow = (...ts) => new Map(ts.filter((t) => t?.kind === 'lend' && receivable(t.receivableId)).map((t) => [t.receivableId, receivable(t.receivableId).balance]));
+function keepOwed(before) {
+  for (const [id, was] of before) {
+    const r = receivable(id);
+    if (r && r.balance < -0.001 && r.balance < was - 0.001) {
+      const paid = sum(db.txns.filter((t) => t.kind === 'collect' && t.receivableId === id && !t.orphan), (t) => t.amount);
+      fail(`${r.name} already paid you back ${peso(paid)}. Lower or delete that repayment first`, 'amount');
+    }
+  }
+}
+
 export function saveTxn(input = {}) {
   return tx(() => {
     const old = isId(input.id) ? db.txns.find((t) => t.id === input.id) : null;
     const t = buildTxn(defined(input), old);
     let out = t;
     const oldTouched = !!old && touchesDebt(old);
+    const owed = owedNow(old);
     if (old) {
       touch('txns', old);
       revert(old);
@@ -1702,6 +1753,7 @@ export function saveTxn(input = {}) {
       added('txns', t);
     }
     apply(out);
+    keepOwed(owed);
     if (oldTouched || touchesDebt(out)) snap();
     return out;
   });
@@ -1714,9 +1766,11 @@ export function deleteTxn(id) {
     if (!t) return null;
     const copy = JSON.parse(JSON.stringify(t));
     const touched = touchesDebt(t);
+    const owed = owedNow(t);
     dropped('txns', t);
     revert(t);
     db.txns = db.txns.filter((x) => x !== t);
+    keepOwed(owed);
     if (touched) snap();
     return copy;
   });

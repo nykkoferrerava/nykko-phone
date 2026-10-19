@@ -232,6 +232,13 @@ describe('util: money', () => {
     assert.equal(U.peso(-0.001), '₱0');
     assert.equal(U.peso(NaN), '₱0');
     assert.equal(U.peso(undefined), '₱0');
+    // The same text Intl gives, without Intl.
+    const fmt = new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP' });
+    const fmt0 = new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP', maximumFractionDigits: 0 });
+    const intl = (n, whole) => { const c = Math.round(n * 100); if (c === 0) return '₱0'; const a = Math.abs(c) / 100; const t = whole || c % 100 === 0 ? fmt0.format(a) : fmt.format(a); return c < 0 ? `\u2212${t}` : t; };
+    const xs = [0.004, 0.005, 0.01, 0.1, 0.5, 0.99, 1, 9.99, 12.5, 12.6, 99.5, 100, 999.995, 1000, 1234.5, 99999.99, 100000, 999999.5, 1234567.89, 999999999.99];
+    for (let i = 0; i < 3000; i++) xs.push(Math.round((Math.random() * 10 ** (1 + (i % 9))) * 100) / 100);
+    for (const x of xs) for (const n of [x, -x]) for (const whole of [false, true]) assert.equal(U.peso(n, { whole }), intl(n, whole), `${n} whole=${whole}`);
   });
   test('BUG-26: pesoShort uses k / M / B and never "₱500000M"', () => {
     assert.equal(U.pesoShort(0), '₱0');
@@ -389,6 +396,15 @@ describe('store: load, sanitize and migration', () => {
     spend(100); await S.flush(); // saving goes to the new store; v2's key and the copy stay as they were
     assert.equal(localStorage.getItem(r.rescuedKey), raw);
     assert.equal(localStorage.getItem('pitaka.data'), raw);
+  });
+  test('Erase all data also removes the rescued copies of unreadable data', async () => {
+    await v2Phone('{"txns":[{"id":"a"');
+    console.error = () => {};
+    let r; try { r = await S.load(); } finally { console.error = quiet; }
+    assert.ok(localStorage.getItem(r.rescuedKey));
+    S.resetAll(); await S.flush();
+    const left = []; for (let i = 0; i < localStorage.length; i++) left.push(localStorage.key(i));
+    assert.deepEqual(left.filter((k) => k.startsWith('pitaka.data')), []);
   });
   test('BUG-03: JSON that is not a Pitaka object ([], null, 42) is rescued too', async () => {
     for (const raw of ['[]', 'null', '42', '"hello"']) {

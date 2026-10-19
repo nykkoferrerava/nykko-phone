@@ -76,8 +76,9 @@ export function parseAmount(s) {
   if (!t) return null;
   let sign = 1;
   let mark = '';
-  if (/\b(dr|debit)\.?$/i.test(t)) { mark = 'dr'; t = t.replace(/\b(dr|debit)\.?$/i, ''); }
-  else if (/\b(cr|credit)\.?$/i.test(t)) { mark = 'cr'; t = t.replace(/\b(cr|credit)\.?$/i, ''); }
+  // "500.00 DR", or "500.00DR" with no space.
+  if (/(?:\b|(?<=\d))(dr|debit)\.?$/i.test(t)) { mark = 'dr'; t = t.replace(/(?:\b|(?<=\d))(dr|debit)\.?$/i, ''); }
+  else if (/(?:\b|(?<=\d))(cr|credit)\.?$/i.test(t)) { mark = 'cr'; t = t.replace(/(?:\b|(?<=\d))(cr|credit)\.?$/i, ''); }
   t = t.replace(/(php|₱|p(?=\s*[\d(-]))/gi, '').replace(/\s+/g, '');
   if (/^\(.*\)$/.test(t)) { sign = -1; t = t.slice(1, -1); }
   if (/^[-−–]/.test(t)) { sign = -sign; t = t.slice(1); } else if (/^\+/.test(t)) t = t.slice(1);
@@ -95,8 +96,10 @@ const amountOf = (s) => parseAmount(s)?.n ?? null;
 export function parseDate(s, opts = {}) {
   const d = parseDay(s, opts);
   if (!d) return null;
-  // "08:12 PM", "20:12", "8:12:05 am" after the date: the time it happened.
-  const tm = /\b(\d{1,2}):(\d{2})(?::\d{2})?\s*([ap]\.?m\.?)?(?![\d:])/i.exec(String(s).slice(10));
+  // "08:12 PM", "20:12", "8:12:05 am" after the date (however long the date was): the time it happened.
+  const rest = String(s).trim().replace(/\s+/g, ' ').slice(d.len);
+  delete d.len;
+  const tm = /\b(\d{1,2}):(\d{2})(?::\d{2})?\s*([ap]\.?m\.?)?(?![\d:])/i.exec(rest);
   if (tm) {
     let h = +tm[1];
     const pm = tm[3] && /p/i.test(tm[3]);
@@ -109,12 +112,12 @@ function parseDay(s, { order = 'mdy', year = null } = {}) {
   const t = String(s ?? '').trim().replace(/\s+/g, ' ');
   if (!t) return null;
   let m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})\b/.exec(t);
-  if (m) { const [y, mo, d] = [+m[1], +m[2], +m[3]]; return validDay(y, mo, d) ? { iso: `${y}-${pad(mo)}-${pad(d)}`, kind: 'iso' } : null; }
+  if (m) { const [y, mo, d] = [+m[1], +m[2], +m[3]]; return validDay(y, mo, d) ? { iso: `${y}-${pad(mo)}-${pad(d)}`, kind: 'iso', len: m[0].length } : null; }
   m = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})\b/.exec(t);
   if (m) {
     const a = +m[1], b = +m[2], y = fullYear(+m[3]);
     const [mo, d] = order === 'dmy' ? [b, a] : [a, b];
-    return validDay(y, mo, d) ? { iso: `${y}-${pad(mo)}-${pad(d)}`, kind: 'num', a, b } : null;
+    return validDay(y, mo, d) ? { iso: `${y}-${pad(mo)}-${pad(d)}`, kind: 'num', a, b, len: m[0].length } : null;
   }
   // "Oct 13, 2026", "October 13 2026", "Oct 13"
   m = /^([A-Za-z]{3,9})\.? (\d{1,2})(?:st|nd|rd|th)?,? ?(\d{4})?\b/.exec(t);
@@ -122,7 +125,7 @@ function parseDay(s, { order = 'mdy', year = null } = {}) {
     const mo = monthOf(m[1]);
     const y = m[3] ? +m[3] : year;
     if (!y) return null;
-    return validDay(y, mo, +m[2]) ? { iso: `${y}-${pad(mo)}-${pad(+m[2])}`, kind: 'name', guessedYear: !m[3] } : null;
+    return validDay(y, mo, +m[2]) ? { iso: `${y}-${pad(mo)}-${pad(+m[2])}`, kind: 'name', guessedYear: !m[3], len: m[0].length } : null;
   }
   // "13 Oct 2026", "13-Oct-26", "13 October"
   m = /^(\d{1,2})[ -]([A-Za-z]{3,9})\.?[ ,-]*(\d{2,4})?\b/.exec(t);
@@ -130,7 +133,7 @@ function parseDay(s, { order = 'mdy', year = null } = {}) {
     const mo = monthOf(m[2]);
     const y = m[3] ? fullYear(+m[3]) : year;
     if (!y) return null;
-    return validDay(y, mo, +m[1]) ? { iso: `${y}-${pad(mo)}-${pad(+m[1])}`, kind: 'name', guessedYear: !m[3] } : null;
+    return validDay(y, mo, +m[1]) ? { iso: `${y}-${pad(mo)}-${pad(+m[1])}`, kind: 'name', guessedYear: !m[3], len: m[0].length } : null;
   }
   return null;
 }
@@ -326,15 +329,20 @@ export function buildRows(table, roles, { order = 'auto', positive = 'auto', car
   let pos = positive;
   if (pos === 'auto') {
     pos = card ? 'out' : 'in';
-    if (cAmt >= 0 && cBal >= 0) {
-      let asIn = 0, asOut = 0;
+    // A wallet's balance goes up with money in. The listing order has to be known first: "in, oldest first"
+    // and "out, newest first" fit the same pair of rows. (A card's balance may be owed or bank-style: left as is.)
+    const dates = cDate >= 0 ? table.rows.map((r) => parseDate(r[cDate], { order: ord, year })?.iso).filter(Boolean) : [];
+    if (cAmt >= 0 && cBal >= 0 && !card && dates.length > 1 && dates[0] !== dates[dates.length - 1]) {
+      const newestFirst = dates[0] > dates[dates.length - 1];
+      let up = 0, down = 0;
       for (let i = 1; i < table.rows.length; i++) {
-        const prev = amountOf(table.rows[i - 1][cBal]), bal = amountOf(table.rows[i][cBal]), a = amountOf(table.rows[i][cAmt]);
-        if (prev === null || bal === null || a === null) continue;
-        if (Math.abs(prev + a - bal) < 0.01 || Math.abs(bal + a - prev) < 0.01) asIn++; // in order, or newest first
-        if (Math.abs(prev - a - bal) < 0.01 || Math.abs(bal - a - prev) < 0.01) asOut++;
+        const [older, newer] = newestFirst ? [table.rows[i], table.rows[i - 1]] : [table.rows[i - 1], table.rows[i]];
+        const before = amountOf(older[cBal]), after = amountOf(newer[cBal]), a = amountOf(newer[cAmt]);
+        if (before === null || after === null || !a) continue;
+        if (Math.abs(before + a - after) < 0.01) up++;
+        else if (Math.abs(before - a - after) < 0.01) down++;
       }
-      if (asIn !== asOut) pos = asIn > asOut ? 'in' : 'out';
+      if (up !== down) pos = up > down ? 'in' : 'out';
     }
   }
   const rows = table.rows.map((r, i) => {
@@ -438,6 +446,8 @@ const endOfDay = (iso) => { const [y, m, d] = iso.split('-').map(Number); return
 // The statement's closing balance against Pitaka's balance for that wallet at the end of that day.
 export function closingCheck(accountId, closing) {
   if (!accountId || !closing || closing.balance === null || !S.account(accountId)) return null;
+  // Before the wallet's starting balance there is nothing to compare: that money is already in it.
+  if (S.account(accountId).openingDate && closing.date < S.account(accountId).openingDate) return null;
   const pitaka = S.balanceAt(accountId, endOfDay(closing.date));
   return { date: closing.date, statement: closing.balance, pitaka, diff: round2(closing.balance - pitaka) };
 }

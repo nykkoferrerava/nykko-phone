@@ -16,20 +16,23 @@ real messages**. Banks change their wording without notice. So every built-in fo
 
 **Formats you teach always win over the built-in ones.**
 
+Which reader Pitaka uses depends on who sent the alert: an SMS sender name that contains one of the words
+below (capitals and spaces don't matter), or an email address that ends with one of the domains.
+
 | Sender | Matched by | What the built-in reader expects (unverified) |
 | --- | --- | --- |
-| GCash | sender `GCash`, email `@gcash.com` | "You have paid PHP 289.00 to …", "You have received PHP … from …", "You have sent PHP … to …", bill payments, load purchases, cash-in |
-| GoTyme | `GoTyme`, `@gotyme.com.ph` | the common phrasing below |
-| Maya | `Maya`, `PayMaya`, `@maya.ph` | the common phrasing below |
+| GCash | `GCash`, `@gcash.com` | "You have paid PHP 289.00 to …", "You have received PHP … from …", "You have sent PHP … to …", bill payments, load purchases, cash-in |
+| GoTyme | `GoTyme`, `GoTymeBank`, `@gotyme.com.ph`, `@gotymebank.com` | the common phrasing below |
+| Maya | `Maya`, `PayMaya`, `@maya.ph`, `@paymaya.com` | the common phrasing below |
 | BPI | `BPI`, `@bpi.com.ph` | the common phrasing below |
 | BDO | `BDO`, `@bdo.com.ph` | the common phrasing below |
-| UnionBank | `UnionBank`, `UBP`, `@unionbankph.com` | the common phrasing below |
-| Metrobank | `Metrobank`, `@metrobank.com.ph` | the common phrasing below |
-| Security Bank | `SecurityBank`, `@securitybank.com` | the common phrasing below |
+| UnionBank | `UnionBank`, `UnionBankPH`, `UBP`, `@unionbankph.com` | the common phrasing below |
+| Metrobank | `Metrobank`, `MBTC`, `@metrobank.com.ph` | the common phrasing below |
+| Security Bank | `Security Bank`, `SecBank`, `@securitybank.com` | the common phrasing below |
 | RCBC | `RCBC`, `@rcbc.com` | the common phrasing below |
-| SeaBank | `SeaBank`, `MariBank`, `@seabank.ph` | the common phrasing below |
-| CIMB | `CIMB`, `@cimb.com` | the common phrasing below |
-| Apple Wallet | the Wallet automation | merchant, amount and card come as separate fields (not text), so this one is reliable |
+| SeaBank | `SeaBank`, `MariBank`, `@seabank.ph`, `@maribank.ph` | the common phrasing below |
+| CIMB | `CIMB`, `@cimb.com`, `@cimbbank.com.ph` | the common phrasing below |
+| Apple Wallet | the Wallet automation | merchant, amount and card arrive as separate fields (not as a message), so reading them doesn't depend on wording. The trigger itself can miss a payment. |
 | Anyone else | any sender | a peso amount with a card ending, "debited", "credited" and the like, at low confidence: these go to Review |
 
 The common phrasing: "You sent / received / paid ₱… to / from / at …", "Your card ending 1234 was used
@@ -39,14 +42,19 @@ last four digits.
 
 ## Teach Pitaka a format (on your phone)
 
-When an alert lands in Review as **Unknown format**, tap **Teach**. Tap the words that are the
-amount, then the merchant (or person), the balance and the reference number if the message has them, and
-say what the message means (money out, money in, or a transfer between your own wallets). Pitaka saves the
-pattern and reads every later message like it, starting with the one in front of you.
+When an alert lands in Review as **Unknown format**, tap **Teach**. On the **Teach this format** screen:
 
-See and edit your formats in Settings → Inbox and alerts → **Alert formats**: each one shows the pattern
-with `{amount}`, `{merchant}`, `{balance}`, `{ref}`, `{#}` (any number), `{w}` (any word) and `{*}`
-(anything), and you can paste a message to test it. Your formats are included in backups.
+1. With **Amount** chosen at the top, tap the amount in the message.
+2. Choose **Merchant** and tap the merchant's (or person's) words. Do the same with **Balance** and
+   **Reference** if the message has them.
+3. Under **This message means**, choose money out, money in, or sent to / received from another of your
+   wallets, and under **For wallet or card**, the one it's about. Then **Save format**.
+
+Pitaka saves the pattern and reads every later message like it, starting with the one in front of you.
+
+See and edit your formats in Settings → Inbox and alerts → **Alert formats**. Tap one to see its pattern,
+written with `{amount}`, `{merchant}`, `{balance}`, `{ref}`, `{#}` (any number), `{w}` (any word) and `{*}`
+(anything); paste a message under **Try it on a message** to test it. Your formats are included in backups.
 
 Which wallet or card an alert is for comes from the format, a card's last four digits, or the sender. Map
 them in Settings → Inbox and alerts → **Cards and accounts** (for example "card ending 1234 → BPI Gold").

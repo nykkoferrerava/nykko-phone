@@ -92,6 +92,12 @@ describe('alerts: banks and other wallets (unverified formats)', () => {
     const r = A.parseAlert({ type: 'email', raw: { from: 'GoTyme Bank <no-reply@gotyme.com.ph>', subject: 'You sent money', body: '<p>Hi!</p><p>You sent <b>&#8369;1,000.00</b> to JUAN DELA CRUZ on 18 Oct 2026.</p><p>Ref No. 998877665544</p>' } });
     assert.deepEqual([r.parser, r.ev.kind, r.ev.amount, r.ev.merchant, r.ev.reference], ['gotyme', 'transfer-out', 1000, 'JUAN DELA CRUZ', '998877665544']);
   });
+  test('email: numeric entities (&#160; between PHP and the amount) are decoded too', () => {
+    const r = A.parseAlert({ type: 'email', raw: { from: 'BPI <alerts@bpi.com.ph>', subject: 'Payment', body: '<p>You have paid&#160;PHP&#160;1,000.00 to <b>MERALCO</b> on Oct 13.</p><p>Ref&#xA0;No. 5566778899</p>' } });
+    assert.deepEqual([r.parser, r.ev.kind, r.ev.amount, r.ev.merchant, r.ev.reference], ['bpi', 'expense', 1000, 'MERALCO', '5566778899']);
+    const amp = A.alertText({ type: 'email', raw: { body: 'A &amp;#160; B &#38; C' } });
+    assert.equal(amp, 'A &#160; B & C', 'an escaped entity is decoded once, not twice');
+  });
   test('Apple Wallet transactions come structured', () => {
     const r = A.parseAlert({ type: 'wallet', raw: { merchant: 'Starbucks Reserve', amount: '₱245.00', card: 'BPI Gold' } });
     assert.deepEqual([r.ev.kind, r.ev.amount, r.ev.merchant, r.ev.cardName, r.confidence], ['expense', 245, 'Starbucks Reserve', 'BPI Gold', 0.9]);
@@ -131,5 +137,12 @@ describe('alerts: teaching a format', () => {
   test('a merchant at the very end still reads the whole name', () => {
     assert.deepEqual(A.matchTemplate('Charged {amount} by {merchant}', 'Charged PHP 10.00 by NETFLIX.COM'), { amount: 10, merchant: 'NETFLIX' });
     assert.deepEqual(A.matchTemplate('Charged {amount} by {merchant}', 'Charged PHP 10.00 by SPOTIFY AB'), { amount: 10, merchant: 'SPOTIFY AB' });
+  });
+  test('{*} after the merchant ("the rest") does not cut the merchant short', () => {
+    const text = 'Paid PHP 289.00 at JOLLIBEE SM NORTH. Bal PHP 1,234.56. Thank you!';
+    assert.deepEqual(A.matchTemplate('Paid {amount} at {merchant}{*}', text), { amount: 289, merchant: 'JOLLIBEE SM NORTH' });
+    assert.deepEqual(A.matchTemplate('Paid {amount} at {merchant} {*}', text), { amount: 289, merchant: 'JOLLIBEE SM NORTH' });
+    assert.deepEqual(A.matchTemplate('Paid {amount} {*}', 'Paid PHP 1,000.00'), { amount: 1000 }, '{*} may be nothing at all');
+    assert.deepEqual(A.matchTemplate('{*} paid {amount} to {merchant} on {#}/{#}. {*}', 'Hi! You paid P 1,000.00 to MERALCO INC on 10/13. Thanks'), { amount: 1000, merchant: 'MERALCO INC' });
   });
 });

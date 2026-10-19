@@ -197,7 +197,8 @@ export const countFormat = (x) => groupFmt.format(Math.round(x));
 
 export function bar(pct, cls = '', label = '') {
   const p = Number.isFinite(pct) ? Math.max(0, Math.min(100, pct)) : 0;
-  return `<div class="progress ${cls}" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(p)}"${label ? ` aria-label="${esc(label)}"` : ''}><div style="width:${p.toFixed(1)}%"></div></div>`;
+  // spans, so a bar can sit inside a row's <button>
+  return `<span class="progress ${cls}" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(p)}"${label ? ` aria-label="${esc(label)}"` : ''}><span style="width:${p.toFixed(1)}%"></span></span>`;
 }
 
 // back: [label, action, extra] shows "‹ label" instead of the close link (sub-pages of Settings).
@@ -290,6 +291,8 @@ export function showFormError(form, err) {
   const input = name && form.querySelector(`[name="${CSS.escape(name)}"]`);
   if (input && input.type !== 'hidden') {
     input.setAttribute('aria-invalid', 'true');
+    const fold = input.closest('details'); // a field tucked away under "More": show it
+    if (fold && !fold.open) fold.open = true;
     input.focus({ preventScroll: true });
   }
   box.scrollIntoView({ block: 'nearest' });

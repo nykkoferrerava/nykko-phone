@@ -85,7 +85,7 @@ export function catManager({ reorder = false } = {}) {
           <button type="button" class="icon-btn plain" data-action="catMove" data-id="${esc(c.id)}" data-d="-1" aria-label="Move ${esc(c.name)} up" ${i === 0 ? 'disabled' : ''}>${icon('up')}</button>
           <button type="button" class="icon-btn plain" data-action="catMove" data-id="${esc(c.id)}" data-d="1" aria-label="Move ${esc(c.name)} down" ${i === cats.length - 1 ? 'disabled' : ''}>${icon('down')}</button></li>`;
       }
-      return `<li class="row" role="button" tabindex="0" data-action="catForm" data-id="${esc(c.id)}"><span class="icon" aria-hidden="true">${esc(c.emoji)}</span><span class="grow"><span class="title${c.hidden ? ' muted' : ''}">${esc(c.name)}</span><span class="meta">${esc(meta)}</span></span>${c.hidden ? `<span class="chip">${icon('eye-off')}Hidden</span>` : ''}<span class="chev" aria-hidden="true">${icon('right')}</span></li>`;
+      return `<li><button type="button" class="row" data-action="catForm" data-id="${esc(c.id)}"><span class="icon" aria-hidden="true">${esc(c.emoji)}</span><span class="grow"><span class="title${c.hidden ? ' muted' : ''}">${esc(c.name)}</span><span class="meta">${esc(meta)}</span></span>${c.hidden ? `<span class="chip">${icon('eye-off')}Hidden</span>` : ''}<span class="chev" aria-hidden="true">${icon('right')}</span></button></li>`;
     }).join('')}</ul>
     ${reorder ? '' : `<button class="btn block" data-action="catForm">${icon('plus')}New category</button>`}`);
 }

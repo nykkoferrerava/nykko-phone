@@ -46,6 +46,24 @@ describe('statements: money and dates', () => {
     assert.deepEqual(T.parseAmount('500.00 CR'), { n: 500, mark: 'cr' });
     for (const bad of ['', 'abc', '12,34', '1001234567890', '09171234567', '2026-10-13']) assert.equal(T.parseAmount(bad), null, bad);
   });
+  test('DR / CR written right after the number, with no space', () => {
+    assert.deepEqual(T.parseAmount('1,234.56CR'), { n: 1234.56, mark: 'cr' });
+    assert.deepEqual(T.parseAmount('500.00DR'), { n: 500, mark: 'dr' });
+    assert.equal(T.parseAmount('CR'), null);
+  });
+  test('the time after a short date is read after the date, not from a fixed position', () => {
+    const min = (s) => T.parseDate(s, { year: 2026 })?.min;
+    assert.equal(min('1/2/2026 18:30'), 18 * 60 + 30, 'not 08:30');
+    assert.equal(min('1/2/2026 8:30 PM'), 20 * 60 + 30);
+    assert.equal(min('2/1/26 7:05 am'), 7 * 60 + 5);
+    assert.equal(min('10/13/2026 08:12 PM'), 20 * 60 + 12);
+    assert.equal(min('Oct 2, 2026 18:30'), 18 * 60 + 30);
+    assert.equal(min('2026-10-02 00:05'), 5);
+    assert.equal(min('1/2/2026'), undefined);
+    const t = T.tableFromCsv('Date,Description,Amount\n1/2/2026 18:30,JOLLIBEE,-289.00\n');
+    const [row] = T.buildRows(t, t.roles).rows;
+    assert.equal(new Date(row.at).getHours(), 18);
+  });
   test('dates in the usual forms; numeric ones month-first unless a day is over 12', () => {
     const d = (s, o) => T.parseDate(s, { year: 2026, ...o })?.iso ?? null;
     assert.equal(d('2026-10-13 08:12 PM'), '2026-10-13');
@@ -125,6 +143,22 @@ describe('statements: CSV', () => {
     const b = T.buildRows(t, t.roles, { card: true });
     assert.equal(b.positive, 'out');
     assert.deepEqual(b.rows.map((r) => [r.kind, r.amount]), [['expense', 1499], ['income', 3000], ['income', 200]]);
+  });
+  test('the running balance settles what a positive Amount means, oldest or newest first', () => {
+    // A wallet export where money out is positive and money in is negative.
+    const rows = ['2026-10-01,OPENING BALANCE,,5000.00', '2026-10-02,JOLLIBEE,289.00,4711.00', '2026-10-03,CASH IN,-1000.00,5711.00', '2026-10-04,GRAB,175.00,5536.00'];
+    for (const list of [rows, [...rows].reverse()]) {
+      const t = T.tableFromCsv(`Date,Description,Amount,Balance\n${list.join('\n')}\n`);
+      const b = T.buildRows(t, t.roles);
+      assert.equal(b.positive, 'out');
+      assert.deepEqual(b.rows.filter((r) => r.amount).map((r) => [r.merchant, r.kind]).sort(), [['CASH IN', 'income'], ['GRAB', 'expense'], ['JOLLIBEE', 'expense']]);
+    }
+    // The usual signs (money out negative) stay as they are, in either order.
+    const usual = ['2026-10-02,JOLLIBEE,-289.00,4711.00', '2026-10-03,CASH IN,1000.00,5711.00'];
+    for (const list of [usual, [...usual].reverse()]) {
+      const t = T.tableFromCsv(`Date,Description,Amount,Balance\n${list.join('\n')}\n`);
+      assert.equal(T.buildRows(t, t.roles).positive, 'in');
+    }
   });
   test('roles and options can be changed by hand', () => {
     const t = T.tableFromCsv('When,What,How much\n01/02/2026,X,100\n');
@@ -229,6 +263,13 @@ describe('statements: the monthly check', () => {
     assert.equal(T.closingCheck(gcash.id, built.closing).diff, 0);
     assert.equal(T.lastStatementCheck(gcash.id).amount, 5090.5);
     assert.equal(T.reconcileDue(gcash.id), false);
+  });
+  test('a statement that ends before the wallet\'s starting balance is not compared with it', () => {
+    const { gcash } = setup();
+    S.saveAccount({ id: gcash.id, opening: 7000, openingDate: '2026-10-13' }); // set up today, with today's balance
+    const { built } = gcashRows({ accountId: gcash.id });
+    assert.equal(built.closing.date, '2026-10-12');
+    assert.equal(T.closingCheck(gcash.id, built.closing), null, 'no "difference" to fix: that balance is already in the starting one');
   });
   test('when they already match, only the check is recorded', () => {
     const { gcash } = setup();

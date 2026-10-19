@@ -13,8 +13,9 @@ const R = await import(`${APP}/js/relay-client.js`);
 const Y = await import(`${APP}/js/sync.js`);
 const X = await import(`${APP}/js/inbox.js`);
 
-// The iOS 26 Shortcuts actions the guide may name.
-const ACTIONS = new Set(['Text', 'Set Variable', 'Get File', 'If', 'Otherwise', 'End If', 'Get Dictionary from Input', 'Get Dictionary Value', 'Split Text', 'Ask for Input', 'Choose from List',
+// The iOS 26 Shortcuts actions the guide may name, as the app labels them. "Get File from Folder" is the
+// one that takes a path; the document picker is a separate action (Select File).
+const ACTIONS = new Set(['Text', 'Set Variable', 'Get File from Folder', 'If', 'Otherwise', 'End If', 'Get Dictionary from Input', 'Get Dictionary Value', 'Split Text', 'Ask for Input', 'Choose from List',
   'Random Number', 'Dictionary', 'Append to Text File', 'Show Notification', 'Get Contents of URL', 'Save File']);
 
 describe('guide', () => {
@@ -32,6 +33,15 @@ describe('guide', () => {
       assert.ok(names.indexOf('Append to Text File') < names.indexOf('Get Contents of URL'), `${s.id} saves the copy before sending`);
     }
   });
+  test('each POST sends the same keys and values as the Dictionary, as JSON fields', () => {
+    for (const s of G.SHORTCUTS) {
+      const dict = s.steps.find((x) => x.a === 'Dictionary');
+      const posts = s.steps.filter((x) => x.a === 'Get Contents of URL' && x.copy === '{URL}/in');
+      assert.equal(posts.length, 1, s.id);
+      assert.match(posts[0].d, /Request Body \*\*JSON\*\*/, `${s.id} posts JSON fields`);
+      assert.deepEqual(posts[0].keys, dict.keys, `${s.id}: the POST and the Dictionary match`);
+    }
+  });
   test('fill() puts in your values, or readable stand-ins', () => {
     assert.equal(G.fill('{URL}/in', { url: 'https://r.x.workers.dev' }), 'https://r.x.workers.dev/in');
     assert.equal(G.fill('Bearer {TOKEN}'), 'Bearer <your write token>');
@@ -42,7 +52,7 @@ describe('guide', () => {
 });
 
 describe('guide: each shortcut end to end', () => {
-  // What each Dictionary holds when the shortcut runs (all Text, as the guide says).
+  // What each shortcut's JSON body holds when it runs (all Text fields, as the guide says).
   const sample = {
     keypad: { type: 'entry', amount: '150', category: '🍜 Food', wallet: 'GCash', note: '' },
     text: { type: 'text', text: 'grab 175 gcash' },
@@ -59,11 +69,11 @@ describe('guide: each shortcut end to end', () => {
     R.useFetch((url, init = {}) => worker.fetch(new Request(url, { ...init, headers: { ...init.headers, 'CF-Connecting-IP': '10.7.0.1' } }), env));
     const { relay } = await Y.pairWith('https://pitaka-relay.example.workers.dev', 'correct-horse-battery-staple');
     for (const s of G.SHORTCUTS) {
-      const dict = s.steps.find((x) => x.a === 'Dictionary');
-      const keys = dict.keys.map(([k]) => k);
+      const body = s.steps.find((x) => x.a === 'Get Contents of URL' && x.copy === '{URL}/in');
+      const keys = body.keys.map(([k]) => k);
       const item = { ...sample[s.id], id: `${s.id}-20261013124100-123456`, at: '2026-10-13T12:41:00+08:00' };
       assert.deepEqual(Object.keys(item).sort(), [...keys].sort(), `${s.id}: the sample has the guide's keys`);
-      assert.equal(item.type, dict.keys.find(([k]) => k === 'type')[1].replaceAll('`', ''));
+      assert.equal(item.type, body.keys.find(([k]) => k === 'type')[1].replaceAll('`', ''));
       assert.ok(s.types.includes(item.type));
       assert.equal((await R.send(relay, item)).ok, true, s.id);
     }

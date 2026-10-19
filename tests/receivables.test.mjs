@@ -58,9 +58,29 @@ describe('receivables: lending and getting paid back', () => {
     assert.equal(r.balance, 1200);
     S.restoreTxn(copy);
     assert.equal(r.balance, 900);
-    S.deleteTxn(a.id); S.deleteTxn(copy.id);
+    S.deleteTxn(copy.id); S.deleteTxn(a.id);
     assert.equal(r.balance, 0);
     assert.equal(S.accountBalance(g.id), 5000);
+  });
+  test('a lend cannot be lowered or deleted below what was already paid back of it', () => {
+    fresh(); const g = gcash();
+    const a = S.lend({ name: 'Mel', amount: 500, accountId: g.id });
+    const r = S.findReceivable('Mel');
+    const c = S.saveTxn({ kind: 'collect', receivableId: r.id, amount: 300, accountId: g.id, date: '2026-10-13' });
+    throwsField(() => S.deleteTxn(a.id), 'amount');
+    throwsField(() => S.saveTxn({ id: a.id, kind: 'lend', receivableId: r.id, amount: 200, accountId: g.id, date: '2026-10-13' }), 'amount');
+    assert.match((() => { try { S.deleteTxn(a.id); } catch (e) { return e.message; } })(), /Mel already paid you back ₱300/);
+    const owed = () => S.receivable(r.id).balance; // a refused change puts back fresh copies
+    assert.equal(owed(), 200);
+    assert.equal(S.txn(a.id).amount, 500);
+    assert.equal(S.accountBalance(g.id), 4800);
+    S.saveTxn({ id: a.id, kind: 'lend', receivableId: r.id, amount: 300, accountId: g.id, date: '2026-10-13' });
+    assert.equal(owed(), 0);
+    S.saveReceivable({ id: r.id, name: 'Mel A.' });
+    S.lend({ receivableId: r.id, amount: 500, accountId: g.id });
+    assert.equal(owed(), 500);
+    S.deleteTxn(c.id);
+    assert.equal(owed(), 800);
   });
   test('lending is not income or spending in reports', () => {
     fresh(); const g = gcash();

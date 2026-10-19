@@ -90,8 +90,10 @@ export function senderParser(sender) {
 export function alertText(item) {
   const r = item.raw || item;
   if (item.type === 'email') {
+    // Numeric entities (&#160; &#8369; &#xA0;) are decoded too; &amp; goes last so "&amp;#160;" stays text.
     const body = String(r.body || '').replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<br\s*\/?>|<\/p>|<\/div>|<\/tr>/gi, '\n').replace(/<[^>]+>/g, ' ')
-      .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&#8369;|&#x20b1;/gi, '₱').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;|&apos;/g, "'").replace(/&quot;/g, '"');
+      .replace(/&#(?:(\d{1,7})|x([0-9a-f]{1,6}));/gi, (m, d, h) => { const n = d ? Number(d) : parseInt(h, 16); return n > 160 && n < 0x110000 && !(n >= 0xd800 && n < 0xe000) ? String.fromCodePoint(n) : n > 31 && n < 127 ? String.fromCharCode(n) : ' '; })
+      .replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&apos;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&');
     return `${r.subject || ''}\n${body}`.replace(/[ \t]+/g, ' ').replace(/\n\s*\n+/g, '\n').trim().slice(0, 8000);
   }
   return String(r.text || '').replace(/\s+/g, ' ').trim().slice(0, 4000);
@@ -171,7 +173,9 @@ const escapeLiteral = (s) => s.split(/(\s+)/).map((x) => (/^\s+$/.test(x) ? '\\s
 export function compileTemplate(format) {
   if (typeof format !== 'string' || !format.trim()) throw new Error('The format is empty');
   if (format.length > 1000) throw new Error('The format is too long');
-  const parts = format.trim().split(/(\{[^{}]*\})/);
+  // A {*} at the very end matches nothing as well as anything, so it is left out: otherwise it would leave a
+  // {merchant} before it only its first letter.
+  const parts = format.trim().replace(/(?:\s*\{\s*\*\s*\})+$/, '').split(/(\{[^{}]*\})/);
   let src = '^\\s*';
   const groups = [];
   parts.forEach((part, i) => {

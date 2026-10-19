@@ -102,7 +102,7 @@ export function idbAdapter(name = 'pitaka', idb = globalThis.indexedDB) {
         const stores = Object.fromEntries(names.map((n) => [n, t.objectStore(n)]));
         let out;
         t.oncomplete = () => resolve(out);
-        t.onerror = () => reject(t.error);
+        t.onerror = () => reject(t.error || Object.assign(new Error('Transaction failed'), { name: 'UnknownError' }));
         t.onabort = () => reject(t.error || Object.assign(new Error('Transaction aborted'), { name: 'AbortError' }));
         try { out = fn(stores); } catch (e) { try { t.abort(); } catch { /* already finished */ } reject(e); }
       });
@@ -216,6 +216,15 @@ export function readLegacy(ls = globalThis.localStorage) {
   try { data = JSON.parse(raw); } catch { data = undefined; }
   const ok = data !== null && typeof data === 'object' && !Array.isArray(data);
   return ok ? { state: 'ok', raw, data } : { state: 'unreadable', raw };
+}
+
+// Erase all data: the rescued copies go too.
+export function dropRescued(ls = globalThis.localStorage) {
+  try {
+    const keys = [];
+    for (let i = 0; i < ls.length; i++) { const k = ls.key(i); if (k && k.startsWith(`${LEGACY_KEY}.unreadable-`)) keys.push(k); }
+    for (const k of keys) ls.removeItem(k);
+  } catch { /* blocked: nothing could be kept there either */ }
 }
 
 // Keeps a copy of unreadable v2 data under its own key (once: an identical copy is reused).
