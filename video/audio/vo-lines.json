@@ -1,0 +1,16 @@
+{
+  "voice": "af_heart",
+  "speed": 1.08,
+  "lines": [
+    { "id": "L01", "scene": "hook", "caption": "Payday. Gone by Tuesday?", "tts": "Payday. Gone by Tuesday?" },
+    { "id": "L02", "scene": "logo", "caption": "Meet Pitaka.", "tts": "Meet Pitaka." },
+    { "id": "L03", "scene": "home", "caption": "It shows what's really free to spend, until your next payday.", "tts": "It shows what's really free to spend, until your next payday." },
+    { "id": "L04", "scene": "backtap", "caption": "Double-tap the back of your iPhone. ₱150, food, GCash. Done.", "tts": "Double-tap the back of your iPhone. One-fifty. Food. G-Cash. Done." },
+    { "id": "L05", "scene": "quicktext", "caption": "Or just type it the way you'd say it.", "tts": "Or just type it the way you'd say it." },
+    { "id": "L06", "scene": "alerts", "caption": "Bank and GCash texts fill in on their own, and a ₱289 Jollibee is one purchase, not two.", "tts": "Bank and G-Cash texts fill in on their own, and a two-eighty-nine Jollibee is one purchase, not two." },
+    { "id": "L07", "scene": "statement", "caption": "Bring in your GCash statement. Matched. Balanced.", "tts": "Bring in your G-Cash statement. Matched. Balanced." },
+    { "id": "L08", "scene": "montage", "caption": "Debts, budgets, bills, goals. Every payday, sorted.", "tts": "Debts, budgets, bills, goals. Every payday, sorted." },
+    { "id": "L09", "scene": "privacy", "caption": "No bank passwords, ever. Your data stays yours.", "tts": "No bank passwords. Ever. Your data stays yours." },
+    { "id": "L10", "scene": "end", "caption": "Pitaka. Know your money.", "tts": "Pitaka. Know your money." }
+  ]
+}
