@@ -57,6 +57,19 @@ async function clean(res) {
   return new Response(await res.blob(), { status: res.status, statusText: res.statusText, headers: res.headers });
 }
 
+// Same file as the cached copy? The server's ETag says so (GitHub Pages sends one); without it the bytes do.
+async function unchanged(cached, fresh) {
+  const a = cached.headers.get('etag');
+  const b = fresh.headers.get('etag');
+  if (a && b) return a === b;
+  const [x, y] = await Promise.all([cached.arrayBuffer(), fresh.arrayBuffer()]);
+  if (x.byteLength !== y.byteLength) return false;
+  const u = new Uint8Array(x);
+  const v = new Uint8Array(y);
+  for (let i = 0; i < u.length; i++) if (u[i] !== v[i]) return false;
+  return true;
+}
+
 self.addEventListener('install', (e) => {
   e.waitUntil(
     (async () => {
@@ -113,11 +126,14 @@ self.addEventListener('fetch', (e) => {
 
   const cacheP = caches.open(VERSION);
   // Background refresh (no-cache = revalidate with the server, skipping the browser's HTTP cache).
+  // An unchanged file is left in place: rewriting every file on every launch is wasted work, and the
+  // browser drops the compiled code it keeps next to a cached script when the script is replaced.
   const refresh = fetch(key, { cache: 'no-cache', credentials: 'same-origin' })
     .then(async (res) => {
       if (res.ok && res.type === 'basic') {
-        const copy = await clean(res.clone());
-        await (await cacheP).put(key, copy);
+        const cache = await cacheP;
+        const old = await cache.match(key);
+        if (!old || !(await unchanged(old, res.clone()))) await cache.put(key, await clean(res.clone()));
       }
       return res;
     })
