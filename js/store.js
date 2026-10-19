@@ -761,12 +761,23 @@ export async function replaceAll(data) {
   if (!adapter) adapter = defaultAdapter();
   const m = { ...meta, schema: VERSION, restoredAt: new Date().toISOString() };
   if (m.migration?.state === 'copied') m.migration = { ...m.migration, state: 'replaced' };
+  // Other saves wait while the restore is written: written after it, they would put the data it replaces
+  // (wallets, settings) back on top of it.
+  while (writing || scheduled) await settle();
+  writing = true;
   try {
     await adapter.write(fullOps(next, m));
   } catch (e) {
+    writing = false;
+    schedule(); // what waited is written now (or just hears there was nothing to write)
     throw storageError(e);
   }
+  writing = false;
+  // Changes made meanwhile were to the replaced data: they are dropped, and whoever waited hears so.
+  const ws = waiters, lost = hasStaged();
+  waiters = [];
   install(next, indexOrder(next), m);
+  for (const w of ws) if (lost) w.reject(Object.assign(new Error('Not saved: a backup was restored at the same time'), { name: 'RestoredError' })); else w.resolve();
   if (adapter.kind !== 'localstorage') lsDel(LEGACY_KEY); // the pre-update copy is out of date now
 }
 

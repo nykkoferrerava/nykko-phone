@@ -195,6 +195,30 @@ describe('storage: every change is all-or-nothing', () => {
     assert.equal(S.db.txns.length, 0, 'the first erase is on disk, so nothing comes back');
     assert.equal(stable(memory()), stable(disk()));
   });
+  test('a change made while a restore is being written never lands on top of the restored data', async () => {
+    fresh(); const gc = S.saveAccount({ name: 'GCash', kind: 'ewallet' }); spend(5, { accountId: gc.id }); await S.flush();
+    const backup = { ...JSON.parse(S.exportBackup()), accounts: [{ id: 'bk-cash', name: 'Cash', kind: 'cash', opening: 0 }], txns: [{ id: 'bk1', kind: 'income', amount: 700, date: '2026-10-01', accountId: 'bk-cash' }] };
+    const queue = [];
+    const tick = () => new Promise((r) => setImmediate(r));
+    S.useAdapter({ ...store, write: (ops) => new Promise((resolve, reject) => queue.push({ ops, pass: () => store.write(ops).then(resolve, reject) })) });
+    const restoring = S.replaceAll(backup);
+    while (!queue.length) await tick();
+    const w = queue.shift();
+    assert.equal(w.ops.replace, true, 'the restore is on its way');
+    spend(42, { accountId: gc.id }); // an inbox pull that finishes meanwhile, on the data being replaced
+    let outcome = 'waiting';
+    S.flush().then(() => { outcome = 'saved'; }, () => { outcome = 'not saved'; });
+    await tick();
+    await w.pass();
+    await restoring;
+    for (let i = 0; i < 20; i++) { await tick(); while (queue.length) await queue.shift().pass(); }
+    S.useAdapter(store);
+    assert.equal(outcome, 'not saved', 'so the relay keeps its items, and they come again onto the restored data');
+    assert.deepEqual(S.db.txns.map((t) => t.id), ['bk1']);
+    assert.deepEqual(S.db.accounts.map((a) => a.id), ['bk-cash']);
+    const d = store.dump();
+    assert.deepEqual([d.core.accounts, d.core.settings, d.txns], clone([S.db.accounts, S.db.settings, S.db.txns]), "the old wallets and settings weren't written over the backup");
+  });
   test('property: random changes and random failures, memory always equals the disk afterwards', async () => {
     let seed = 1234; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
     const pick = (arr) => arr[Math.floor(rnd() * arr.length)];
