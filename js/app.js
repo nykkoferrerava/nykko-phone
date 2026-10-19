@@ -598,6 +598,7 @@ applyTheme(db.settings.theme || 'system');
 initScrollHeader();
 renderBanners();
 render();
+performance.mark('pitaka:first-render'); // tools/perf.mjs measures up to here
 if (!db.settings.onboarded) {
   if (needsInstall()) showInstall(); else showOnboarding(2);
 }
