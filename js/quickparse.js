@@ -68,7 +68,7 @@ export function findAmounts(text) {
 }
 
 // ---------------------------------------------------------------- categories
-// ctx.categories: [{ id, name, emoji, key, keywords, hidden }]. Your keywords beat names, names beat synonyms.
+// ctx.categories: [{ id, name, emoji, key, also, keywords, hidden }]. Your keywords beat names, names beat synonyms.
 function matchCategory(text, categories) {
   const hits = [];
   for (const c of categories) {
@@ -83,7 +83,7 @@ function matchCategory(text, categories) {
         for (const t of words(text).split(' ')) if (t.length >= 4 && (t.startsWith(stem) || stem.startsWith(t.replace(/(ies|es|s|y)$/, '')))) hits.push({ c, rank: 1.5, word: t });
       }
     }
-    for (const syn of SYNONYMS[c.key] || []) if (hasPhrase(text, syn) || hasPhrase(text, `${syn}s`)) hits.push({ c, rank: 1 + syn.length / 100, word: hasPhrase(text, syn) ? syn : `${syn}s` });
+    for (const syn of [c.key, ...(c.also || [])].flatMap((k) => SYNONYMS[k] || [])) if (hasPhrase(text, syn) || hasPhrase(text, `${syn}s`)) hits.push({ c, rank: 1 + syn.length / 100, word: hasPhrase(text, syn) ? syn : `${syn}s` });
   }
   if (!hits.length) return { category: null, words: [], conflict: false };
   hits.sort((a, b) => b.rank - a.rank);

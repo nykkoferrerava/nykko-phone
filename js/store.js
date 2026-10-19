@@ -121,9 +121,17 @@ function shapeCategory(r, strict) {
     limit: v.number(r.limit, { min: 0, max: MAX_AMOUNT }, 'Enter a budget amount, or leave it blank', 'limit'),
   };
   if (CATEGORY_KEYS.includes(r.key)) c.key = r.key;
+  // `also`: built-in keys of categories merged into this one, so their synonyms keep matching.
+  const also = [...new Set(Array.isArray(r.also) ? r.also : [])].filter((k) => CATEGORY_KEYS.includes(k) && k !== c.key);
+  if (also.length) c.also = also;
   if (r.hidden === true) c.hidden = true;
-  const kw = str(r.keywords, 200).toLowerCase().split(/[,;\n]+/).map((x) => x.trim()).filter(Boolean);
-  if (kw.length) c.keywords = [...new Set(kw)].join(', ');
+  // Up to 200 characters of whole keywords (a merge can join more than that).
+  const kw = [];
+  for (const k of new Set(str(r.keywords, 2000).toLowerCase().split(/[,;\n]+/).map((x) => x.trim()).filter(Boolean))) {
+    if ([...kw, k].join(', ').length > 200) break;
+    kw.push(k);
+  }
+  if (kw.length) c.keywords = kw.join(', ');
   return c;
 }
 function shapeReceivable(r, strict) {
@@ -1389,11 +1397,14 @@ export function mergeCategory(fromId, intoId) {
       if (t.categoryId === fromId) { touch('txns', t); t.categoryId = intoId; moved++; }
     }
     for (const b of db.bills) if (b.categoryId === fromId) b.categoryId = intoId;
-    if (!(into.limit > 0) && from.limit > 0) into.limit = from.limit;
+    // The money budgeted for both is now spent in one.
+    if (from.limit > 0) into.limit = Math.min(MAX_AMOUNT, round2((into.limit || 0) + from.limit));
     const kw = [into.keywords, from.keywords, from.name.toLowerCase()].filter(Boolean).join(', ');
-    const merged = shapeCategory({ ...into, keywords: kw }, false);
+    const keys = [into.key, ...(into.also || []), from.key, ...(from.also || [])].filter(Boolean);
+    const merged = shapeCategory({ ...into, keywords: kw, key: into.key || from.key, also: keys }, false);
     if (merged.keywords) into.keywords = merged.keywords;
-    if (!into.key && from.key) into.key = from.key;
+    if (merged.key) into.key = merged.key;
+    if (merged.also) into.also = merged.also;
     db.categories = db.categories.filter((c) => c.id !== fromId);
     if (db.settings.lastCategoryId === fromId) db.settings.lastCategoryId = intoId;
     return moved;
