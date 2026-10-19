@@ -89,6 +89,14 @@ node --test tests/*.test.mjs
 Node 22.13 or later. The relay's tests run the real Worker against an in-memory SQLite stand-in for D1;
 the statement tests read real PDFs with the vendored pdf.js.
 
+Browser checks (Playwright with Chromium; the first needs wrangler for its local relay):
+
+```sh
+node tools/e2e.mjs            # every v2 and v3 flow through the real UI, PASS/FAIL per step
+node tools/perf.mjs           # time to Home on a slowed-down CPU, and the offline checks
+node tools/check-upgrade.mjs  # a v2 install updates through the service worker with its data intact
+```
+
 ## What's where
 
 | Path | What |
@@ -103,6 +111,7 @@ the statement tests read real PDFs with the vendored pdf.js.
 | `relay/` | the Cloudflare Worker (`worker.js`) and its `wrangler.toml` |
 | `.github/workflows/deploy-relay.yml` | optional one-click relay deploy |
 | `tools/make-docs.mjs` | regenerates `docs/SETUP-SHORTCUTS.md` |
+| `tools/e2e.mjs`, `tools/perf.mjs`, `tools/check-upgrade.mjs` | the browser checks above |
 
 ## Updating
 

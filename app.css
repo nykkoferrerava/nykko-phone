@@ -512,7 +512,7 @@ button.tile:active, .tile[data-action]:active, .debt:active, .cat-opt:active, .t
 #sheet.open .sheet-panel { transform: translateY(var(--drag, 0px)); }
 #sheet.closing .sheet-panel { transition: transform 0.32s var(--ease-ios); }
 .sheet-panel.dragging { transition: none !important; }
-.grabber-zone { position: sticky; top: 0; z-index: 3; margin: 0 -16px; padding: 7px 16px 0; background: var(--bg-elevated); touch-action: none; cursor: grab; }
+.grabber-zone { position: sticky; top: 0; z-index: 3; display: flow-root; margin: 0 -16px; padding: 7px 16px 0; background: var(--bg-elevated); touch-action: none; cursor: grab; } /* flow-root: 17px tall, so it meets the sticky .sheet-head with no gap */
 .grabber { width: 38px; height: 5px; border-radius: 3px; background: var(--line-strong); margin: 0 auto 5px; }
 .sheet-head { position: sticky; top: 17px; z-index: 3; display: grid; grid-template-columns: minmax(max-content, 1fr) minmax(0, auto) minmax(max-content, 1fr); align-items: center; gap: 8px; min-height: 46px; margin: 0 -16px 4px; padding: 0 16px 8px; background: var(--bg-elevated); touch-action: none; }
 .sheet-head h2 { margin: 0; color: var(--text); font-size: min(1.04rem, 26px); font-weight: 700; text-align: center; display: block; min-width: 0; overflow-wrap: break-word; text-wrap: balance; }
