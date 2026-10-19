@@ -8,7 +8,9 @@ import { esc, fmtDate, toISO } from './util.js';
 import { $, ui, icon, openSheet, closeSheet, sheetHead, field, toast, FormProblem, str, haptic, setBanner, clearBanner } from './ui-core.js';
 import { refresh } from './ui-views.js';
 import { announce } from './ui-review.js';
-import { guideCopy } from './ui-guide.js';
+
+// The guide loads on first use and adds its Copy buttons' values here (ui-guide.js imports this file).
+export const guideHooks = { copy: null };
 
 const conn = { adminSecret: '', showWrite: false, status: null, statusAt: 0 };
 
@@ -46,7 +48,7 @@ const COPY = {
   adminSecret: () => conn.adminSecret,
 };
 export function copyValue(key, data = {}) {
-  if (key === 'g') return guideCopy(data);
+  if (key === 'g') return guideHooks.copy?.(data);
   const v = COPY[key]?.();
   if (!v) return toast('Nothing to copy yet');
   return copyText(v, key === 'write' ? 'Write token copied' : key === 'url' ? 'Relay address copied' : 'Copied');

@@ -1,4 +1,6 @@
 // Pitaka entry point: wires taps, forms, keyboard, lock, onboarding and the service worker.
+// Only what Home needs is imported here. The sheets, onboarding, statements, export, calendar files and the
+// guide load on first use (see "loaded on first use" below), so Home is on screen sooner.
 import * as S from './store.js';
 import { db } from './store.js';
 import { today, monthKey, shiftMonth, toISO, parseISO, advance, addDays, peso } from './util.js';
@@ -9,26 +11,65 @@ import {
   isValidation, isStoreError, storeMessage, ensureEl, haptic,
 } from './ui-core.js';
 import { render, refresh, activityList, schedPay } from './ui-views.js';
-import {
-  FORMS as SHEET_FORMS, draft, txnForm, renderTxnForm, readDraft, editTxn, deleteTxn, updateStepper, addDebtMenu, debtForm, debtSheet,
-  fixDebtForm, billForm, goalForm, goalSheet, walletSheet, walletForm, balancesForm, balanceRow, settingsSheet, restoredSheet,
-  importSheet, importSave, onImportInput, onImportChange, autoInstallments, undoSaved,
-} from './ui-sheets.js';
-import { MONEY_FORMS, recvSheet, recvForm, catManager, catForm, exportSheet } from './ui-money.js';
 import * as X from './inbox.js';
 import {
   REVIEW_FORMS, review, announce, teachSheet, teachTap, teachField, linkSheet, transferSheet, editItem, inboxSettings, alertFormats, templateForm, testTemplate, cardMapSheet,
 } from './ui-review.js';
-import { icsForItem, icsForAll, deliverFile } from './ui-ics.js';
 import { applyTheme, initScrollHeader } from './ui-fx.js';
 import { Lock } from './ui-lock.js';
-import { Onboard, needsInstall, showInstall, continueInBrowser, showOnboarding, finishOnboarding, onboardPin, ONBOARD_FORMS } from './ui-onboard.js';
 import * as Sync from './sync.js';
-import { CONNECT_ACTIONS, CONNECT_FORMS, relaySheet, syncNow, showPendingNews, narrowCsp } from './ui-connect.js';
-import { STATEMENT_ACTIONS, STATEMENT_FORMS, onStatementChange } from './ui-statement.js';
-import { GUIDE_ACTIONS, connectGuide } from './ui-guide.js';
+import { CONNECT_ACTIONS, CONNECT_FORMS, syncNow, showPendingNews, narrowCsp } from './ui-connect.js';
 
-const FORMS = { ...SHEET_FORMS, ...ONBOARD_FORMS, ...MONEY_FORMS, ...REVIEW_FORMS, ...CONNECT_FORMS, ...STATEMENT_FORMS };
+// ============================================================ loaded on first use
+// later(load): a module (or group) that loads the first time it's used, or earlier with ready(). Once it
+// has loaded, use(fn) calls fn straight away, still inside the tap: Safari only shares, copies and brings
+// up the keyboard from code that runs in the tap itself.
+function later(load) {
+  let mod = null;
+  let pending = null;
+  const ready = () => (pending ||= load().then((m) => (mod = m), (e) => { pending = null; throw e; }));
+  return { ready, get: () => mod, use: (fn) => (mod ? fn(mod) : ready().then(fn)) };
+}
+const FORMS = { ...REVIEW_FORMS, ...CONNECT_FORMS };
+// The sheets, onboarding, statements, CSV export and calendar files import each other, so they load together.
+const SCREENS = later(async () => {
+  const [sheets, onboard, money, statement, ics] = await Promise.all([
+    import('./ui-sheets.js'), import('./ui-onboard.js'), import('./ui-money.js'), import('./ui-statement.js'), import('./ui-ics.js'),
+  ]);
+  Object.assign(FORMS, { ...sheets.FORMS, ...onboard.ONBOARD_FORMS, ...money.MONEY_FORMS, ...REVIEW_FORMS, ...CONNECT_FORMS, ...statement.STATEMENT_FORMS });
+  addActions(statement.STATEMENT_ACTIONS);
+  return { sheets, onboard, money, statement, ics };
+});
+const GUIDE = later(async () => {
+  const guide = await import('./ui-guide.js');
+  addActions(guide.GUIDE_ACTIONS);
+  return guide;
+});
+// Their functions under their usual names: `txnForm(...)` loads the screens if needed, then opens the form.
+const from = (group, mod) => (name) => (...a) => group.use((m) => (mod ? m[mod] : m)[name](...a));
+const [sheets, money, onboard, statement, ics, guide] = [
+  from(SCREENS, 'sheets'), from(SCREENS, 'money'), from(SCREENS, 'onboard'), from(SCREENS, 'statement'), from(SCREENS, 'ics'), from(GUIDE),
+];
+const txnForm = sheets('txnForm'), renderTxnForm = sheets('renderTxnForm'), readDraft = sheets('readDraft'), editTxn = sheets('editTxn');
+const deleteTxn = sheets('deleteTxn'), updateStepper = sheets('updateStepper'), addDebtMenu = sheets('addDebtMenu'), debtForm = sheets('debtForm');
+const debtSheet = sheets('debtSheet'), fixDebtForm = sheets('fixDebtForm'), billForm = sheets('billForm'), goalForm = sheets('goalForm');
+const goalSheet = sheets('goalSheet'), walletSheet = sheets('walletSheet'), walletForm = sheets('walletForm'), balancesForm = sheets('balancesForm');
+const settingsSheet = sheets('settingsSheet'), restoredSheet = sheets('restoredSheet');
+const importSheet = sheets('importSheet'), importSave = sheets('importSave'), onImportInput = sheets('onImportInput');
+const onImportChange = sheets('onImportChange'), autoInstallments = sheets('autoInstallments'), undoSaved = sheets('undoSaved');
+const recvSheet = money('recvSheet'), recvForm = money('recvForm'), catManager = money('catManager'), catForm = money('catForm'), exportSheet = money('exportSheet');
+const needsInstall = onboard('needsInstall'), showInstall = onboard('showInstall'), continueInBrowser = onboard('continueInBrowser');
+const showOnboarding = onboard('showOnboarding'), finishOnboarding = onboard('finishOnboarding'), onboardPin = onboard('onboardPin');
+const onStatementChange = statement('onStatementChange');
+const icsForItem = ics('icsForItem'), icsForAll = ics('icsForAll'), deliverFile = ics('deliverFile');
+const connectGuide = guide('connectGuide');
+// The entry form being filled in (a live value in ui-sheets.js), once the sheets have loaded.
+const draft = () => SCREENS.get()?.sheets.draft;
+// Actions of a module that loads later: named here so a tap before it loads works; any others join when it does.
+const lazyActions = (group, pick, names) => Object.fromEntries(names.map((n) => [n, (d, el) => group.use((m) => pick(m)[n](d, el))]));
+function addActions(map) {
+  for (const [k, fn] of Object.entries(map)) if (!(k in ACTIONS)) ACTIONS[k] = fn;
+}
 
 // ============================================================ backup / restore
 async function exportData() {
@@ -93,8 +134,8 @@ function removeWalletRow(el) {
 // ============================================================ actions (data-action)
 const ACTIONS = {
   ...CONNECT_ACTIONS,
-  ...STATEMENT_ACTIONS,
-  ...GUIDE_ACTIONS,
+  ...lazyActions(SCREENS, (m) => m.statement.STATEMENT_ACTIONS, ['statementSheet', 'stmtFile', 'stmtImport', 'stmtReconcile']),
+  ...lazyActions(GUIDE, (m) => m.GUIDE_ACTIONS, ['connectGuide', 'shortcutGuide', 'testShortcut', 'relayFromGuide']),
   pullNow: () => syncNow({ manual: true }),
   tab: ({ tab }) => { ui.tab = tab; if (tab === 'reports') { ui.reportMonth = monthKey(today()); ui.reportFollowsNow = true; } render(); },
   closeSheet,
@@ -122,16 +163,16 @@ const ACTIONS = {
   logPaycheck: () => txnForm({ kind: 'income', amount: db.settings.payAmount || undefined, note: 'Salary' }),
   txnKind: ({ kind }) => {
     readDraft($('#txn-form'));
-    if (draft.kind === kind) return;
-    draft.kind = kind;
-    if (draft.amountAuto) { draft.amountText = ''; draft.amountAuto = false; }
+    if (draft().kind === kind) return;
+    draft().kind = kind;
+    if (draft().amountAuto) { draft().amountText = ''; draft().amountAuto = false; }
     renderTxnForm();
   },
   inst: ({ d }, el) => {
     const form = el.closest('#sheet').querySelector('#txn-form');
     readDraft(form);
-    draft.installments = Math.max(0, (Number(draft.installments) || 0) + Number(d));
-    draft.instTouched = true;
+    draft().installments = Math.max(0, (Number(draft().installments) || 0) + Number(d));
+    draft().instTouched = true;
     updateStepper(form);
   },
   editTxn: ({ id }) => editTxn(id),
@@ -142,7 +183,7 @@ const ACTIONS = {
   addDebtMenu: () => addDebtMenu(),
   importSheet: () => importSheet(),
   importSave: async ({ ctx }, el) => {
-    const { added, failed } = importSave(el);
+    const { added, failed } = await importSave(el);
     await S.flush();
     if (!added) return toast(failed ? 'None of those could be added' : 'Tick at least one debt');
     refresh();
@@ -160,12 +201,12 @@ const ACTIONS = {
   fixDebt: ({ id }) => fixDebtForm(S.debt(id)),
   calendar: async ({ kind, id }) => {
     const item = kind === 'bill' ? S.bill(id) : S.debt(id);
-    const file = item && icsForItem(kind, item);
+    const file = item && (await icsForItem(kind, item));
     if (!file) return toast('There is no upcoming due date to add');
     if ((await deliverFile(file)) === 'downloaded') toast('Open the downloaded file to add it to Calendar');
   },
   calendarAll: async () => {
-    const file = icsForAll();
+    const file = await icsForAll();
     if (!file) return toast('No due dates yet. Add bills or debts first.');
     if ((await deliverFile(file)) === 'downloaded') toast('Open the downloaded file to add the dates to Calendar');
   },
@@ -236,7 +277,7 @@ const ACTIONS = {
   },
   exportSheet: () => exportSheet(),
   // The guide opens once the welcome steps are done (they cover the whole screen).
-  onbConnect: () => { Onboard.afterFinish = () => connectGuide('onboarding'); showOnboarding(6); },
+  onbConnect: () => SCREENS.use((m) => { m.onboard.Onboard.afterFinish = () => connectGuide('onboarding'); showOnboarding(6); }),
 
   // ---- Review
   goReview: () => { closeSheet(); ui.tab = 'review'; render(); },
@@ -252,7 +293,7 @@ const ACTIONS = {
     X.ignore(id); await S.flush(); refresh();
     toast('Ignored', { action: 'Undo', onAction: async () => { X.restore(id); await S.flush(); refresh(); } });
   },
-  reviewEdit: ({ id }) => editItem(id),
+  reviewEdit: ({ id }) => editItem(id, txnForm),
   reviewLink: async ({ id }) => {
     const it = S.inboxItem(id);
     if (it?.reason === 'duplicate' && it.candidates?.length === 1) {
@@ -309,11 +350,11 @@ const ACTIONS = {
   },
   moveMoney: ({ id }) => txnForm({ kind: 'transfer', accountId: id }),
   balancesForm: () => balancesForm(),
-  addWalletRow: (_, el) => {
+  addWalletRow: (_, el) => SCREENS.use((m) => {
     const list = el.closest('form, .onboard-inner').querySelector('[data-wrows]');
-    list.insertAdjacentHTML('beforeend', balanceRow());
+    list.insertAdjacentHTML('beforeend', m.sheets.balanceRow());
     list.lastElementChild.querySelector('[name=wname]').focus();
-  },
+  }),
   removeWalletRow: (_, el) => removeWalletRow(el),
 
   setPin: () => { closeSheet(); Lock.start('set'); },
@@ -401,10 +442,11 @@ document.addEventListener('input', (e) => {
     liveFormat(t);
     sizeAmount(t);
     const form = t.form;
-    if (draft && form?.id === 'txn-form') {
-      draft.amountText = t.value;
-      draft.amountAuto = false;
-      if (draft.kind === 'debt' && !draft.instTouched) autoInstallments(form);
+    const d = draft();
+    if (d && form?.id === 'txn-form') {
+      d.amountText = t.value;
+      d.amountAuto = false;
+      if (d.kind === 'debt' && !d.instTouched) autoInstallments(form);
     }
   } else if (t.hasAttribute?.('data-money')) {
     liveFormat(t);
@@ -458,11 +500,11 @@ document.addEventListener('change', (e) => {
     if (l) l.textContent = t.value === 'card' ? 'Current balance' : 'Remaining balance';
   }
   if (t.name === 'frequency' && form) { const semi = form.querySelector('[data-semi]'); if (semi) semi.hidden = t.value !== 'semimonthly'; }
-  if (form?.id === 'txn-form' && draft) {
+  if (form?.id === 'txn-form' && draft()) {
     if (t.name === 'debtId') {
       readDraft(form);
-      draft.instTouched = false;
-      if (!draft.amountText) draft.amountAuto = true;
+      draft().instTouched = false;
+      if (!draft().amountText) draft().amountAuto = true;
       renderTxnForm({ focusAmount: false });
     } else if (t.name === 'withdraw') {
       readDraft(form);
@@ -576,8 +618,11 @@ ensureEl('install', 'section', 'overlay');
 S.setStoreFailHandler((err) => { saveFailed(err); refresh(); });
 let loaded;
 try { loaded = await S.load(); } catch (e) { console.error(e); loaded = { ok: false, reason: 'unreadable' }; }
-// The relay pairing lives in the secrets store; once paired, Pitaka may only connect to that relay.
-if (await Sync.loadPairing()) narrowCsp();
+let restored = false;
+try { restored = sessionStorage.getItem('pitaka.restored') === '1'; sessionStorage.removeItem('pitaka.restored'); } catch { restored = false; }
+// The welcome steps, and the sheet after restoring a backup, are in the first frame as before: their code
+// loads first. Everyone else gets Home without waiting for it.
+if (!db.settings.onboarded || restored) await SCREENS.ready().catch(console.error);
 if (loaded?.lost) {
   setBanner('load', { level: 'critical', title: "Pitaka's saved data is gone", text: 'iOS may have cleared it to free up space. Restore your latest backup to get your entries back.', actions: [['Restore backup', 'importData', 'primary']] });
 } else if (loaded?.reverted) {
@@ -605,12 +650,18 @@ if (!db.settings.onboarded) {
 if (db.settings.pinHash) Lock.start('unlock', { onDone: showPendingNews });
 syncInert();
 try { navigator.storage?.persist?.(); } catch { /* not supported */ }
+// Once Home is painted, load the sheets in the background so the first tap on + doesn't wait for them.
+requestAnimationFrame(() => setTimeout(() => SCREENS.ready().catch(() => { /* loads again on first use */ }), 0));
 
-let restored = false;
-try { restored = sessionStorage.getItem('pitaka.restored') === '1'; sessionStorage.removeItem('pitaka.restored'); } catch { restored = false; }
+// The relay pairing lives in the secrets store; once paired, Pitaka may only connect to that relay.
+// Read after the first render: nothing on Home depends on it, and nothing reaches the relay before this.
+if (await Sync.loadPairing()) narrowCsp();
 if (restored && db.settings.onboarded && !db.settings.pinHash) restoredSheet({ repair: !!db.settings.relayUrl && !Sync.paired() });
 // What the shortcuts sent while Pitaka was closed (announced after unlocking when the PIN is on).
 syncNow({ locked: !!Lock.mode });
 
 // Test hook, only when served from this computer.
-if (LOCAL) window.pitaka = { db: () => db, S, X, ui, render, toISO, parseISO, advance, Lock, Onboard, applyTheme, ACTIONS, announce };
+if (LOCAL) {
+  window.pitaka = { db: () => db, S, X, ui, render, toISO, parseISO, advance, Lock, applyTheme, ACTIONS, announce };
+  Object.defineProperty(window.pitaka, 'Onboard', { enumerable: true, get: () => SCREENS.get()?.onboard.Onboard });
+}
