@@ -232,6 +232,9 @@ describe('inbox: transfers between your own wallets are not spending', () => {
     assert.equal(S.monthSummary('2026-10').spent, 0);
     assert.equal(S.monthSummary('2026-10').income, 0);
     assert.deepEqual([S.accountBalance(gcash.id), S.accountBalance(gotyme.id)], [4000, 3000]);
+    // Undoing the GoTyme half takes off only its own confirmation: the GCash one stays.
+    X.undoItem(b.ids[0]);
+    assert.deepEqual(S.txn(t.id).conf.map((c) => c.inboxId), [a.review[0]]);
   });
   test('the other order: GoTyme income first, then the GCash send turns it into the transfer', () => {
     const { gcash, gotyme } = setup();

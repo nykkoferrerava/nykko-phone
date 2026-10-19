@@ -349,7 +349,8 @@ function route(it, out) {
       const p = { ...other.parsed, conf: undefined };
       const t = S.saveTxn({ ...txnInput(p, other.id), conf: [{ via: p.src, inst: p.inst, at: p.at, ref: p.ref, inboxId: other.id }, { via: h.p.src, inst: h.p.inst, at: h.p.at, ref: h.p.ref, inboxId: it.id }] });
       S.patchInbox(other.id, { status: 'auto', result: { action: 'created', txnId: t.id }, reason: null, decidedAt: Date.now() });
-      S.patchInbox(it.id, { status: 'auto', parsed, result: { action: 'confirmed', txnId: t.id, before: { conf: null } } });
+      // Undo takes off this half's confirmation only; the other half's stays.
+      S.patchInbox(it.id, { status: 'auto', parsed, result: { action: 'confirmed', txnId: t.id, before: { conf: t.conf.slice(0, 1) } } });
       out.created.push(t.id);
       out.review = out.review.filter((x) => x !== other.id);
       return;
