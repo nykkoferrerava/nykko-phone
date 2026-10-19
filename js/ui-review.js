@@ -92,7 +92,7 @@ function reviewCard(it) {
   const sel = review.selecting;
   const open = review.open.has(it.id);
   return `<li class="card review-card${sel && review.selected.has(it.id) ? ' selected' : ''}">
-    <div class="rc-top">${sel ? `<input type="checkbox" class="rc-check" data-review-select="${esc(it.id)}" ${review.selected.has(it.id) ? 'checked' : ''} aria-label="Select">` : ''}<span class="rc-src">${icon(ic)}${esc(label)} · ${esc(timeOf(it.at))}</span><span class="chip ${tone}">${esc(chip)}</span></div>
+    <div class="rc-top">${sel ? `<label class="rc-hit"><input type="checkbox" class="rc-check" data-review-select="${esc(it.id)}" ${review.selected.has(it.id) ? 'checked' : ''} aria-label="Select ${esc(label)}, ${esc(timeOf(it.at))}"></label>` : ''}<span class="rc-src">${icon(ic)}${esc(label)} · ${esc(timeOf(it.at))}</span><span class="chip ${tone}">${esc(chip)}</span></div>
     <p class="rc-main">${main}</p>${sub ? `<p class="meta">${sub}</p>` : ''}
     ${cand ? `<div class="rc-cand"><span class="meta">Looks like what you already have:</span><ul class="list">${txnRow(cand)}</ul></div>` : ''}
     ${text ? `<button type="button" class="quote${open ? ' open' : ''}" data-action="reviewToggle" data-id="${esc(it.id)}" aria-expanded="${open}">${esc(text)}</button>` : it.trimmed ? '<p class="meta">Message text removed after 90 days.</p>' : ''}
@@ -182,7 +182,7 @@ export function teachSheet(id) {
   openSheet(`${sheetHead('Teach this format', { right: saveLink('teach-form') })}
     <p class="meta pad">Tap the parts that change from message to message. Pitaka remembers the rest and reads the next messages from <b>${esc(A.normSender(it) || 'this sender')}</b> the same way.</p>
     <div class="segmented small" role="radiogroup" aria-label="What are you tapping?">${Object.entries(FIELD_NAMES).map(([k, l]) => `<label><input type="radio" name="teachField" value="${k}" ${k === 'amount' ? 'checked' : ''} data-teach-field><span>${l.split(' ')[0]}</span></label>`).join('')}</div>
-    <div class="tok-text" id="tok-text" aria-label="Message">${tokensHtml()}</div>
+    <div class="tok-text" id="tok-text" role="group" aria-label="Message">${tokensHtml()}</div>
     <p class="meta pad" id="teach-preview" aria-live="polite">Tap the amount first.</p>
     <form id="teach-form" data-form="teach" novalidate>
       ${field('This message means', select('kind', [['expense', 'Money out (purchase, payment, bill)'], ['income', 'Money in'], ['transfer-out', 'Sent to another of my wallets'], ['transfer-in', 'Received from another of my wallets']], p.kind === 'income' ? 'income' : p.kind === 'transfer' ? `transfer-${p.side || 'out'}` : 'expense'))}
@@ -263,7 +263,7 @@ export function alertFormats() {
   const list = db.templates;
   openSheet(`${sheetHead('Alert formats', { back: ['Inbox', 'inboxSettings'] })}
     <p class="meta pad">Formats you taught Pitaka from Review. Built-in formats for GCash, GoTyme, Maya and the banks are unverified guesses; yours always win.</p>
-    ${list.length ? `<ul class="list card">${list.map((t) => `<li class="row" role="button" tabindex="0" data-action="templateForm" data-id="${esc(t.id)}"><span class="icon" aria-hidden="true">${icon('tag')}</span><span class="grow"><span class="title">${esc(t.label || t.sender)}</span><span class="meta mono-line">${esc(t.format)}</span><span class="meta">${esc({ expense: 'Money out', income: 'Money in', 'transfer-out': 'To another wallet', 'transfer-in': 'From another wallet' }[t.kind])} · ${t.hits} read</span></span><span class="chev" aria-hidden="true">${icon('right')}</span></li>`).join('')}</ul>`
+    ${list.length ? `<ul class="list card">${list.map((t) => `<li><button type="button" class="row" data-action="templateForm" data-id="${esc(t.id)}"><span class="icon" aria-hidden="true">${icon('tag')}</span><span class="grow"><span class="title">${esc(t.label || t.sender)}</span><span class="meta mono-line">${esc(t.format)}</span><span class="meta">${esc({ expense: 'Money out', income: 'Money in', 'transfer-out': 'To another wallet', 'transfer-in': 'From another wallet' }[t.kind])} · ${t.hits} read</span></span><span class="chev" aria-hidden="true">${icon('right')}</span></button></li>`).join('')}</ul>`
       : emptyState({ icon: 'tag', title: 'No formats yet', text: 'When an alert lands in Review as "Unknown format", tap Teach and mark the amount, merchant and balance.' })}`);
 }
 export function templateForm(id) {
@@ -302,7 +302,7 @@ export function cardMapSheet() {
   if (cards.length) targets.push({ group: 'Credit cards', options: cards.map((c) => [`c:${c.id}`, c.name]) });
   openSheet(`${sheetHead('Cards and accounts', { back: ['Inbox', 'inboxSettings'] })}
     <p class="meta pad">Tell Pitaka which wallet or credit card an alert is about. A credit-card purchase adds to that card's balance.</p>
-    ${list.length ? `<ul class="list card">${list.map((m) => `<li class="row"><span class="icon" aria-hidden="true">${icon(m.cardId ? 'card' : 'wallet')}</span><span class="grow"><span class="title">${m.last4 ? `Ending ${esc(m.last4)}` : `From ${esc(m.sender)}`}</span><span class="meta">→ ${esc(name(m))}</span></span><button type="button" class="icon-btn plain" data-action="deleteCardMap" data-id="${esc(m.id)}" aria-label="Remove">${icon('trash')}</button></li>`).join('')}</ul>` : ''}
+    ${list.length ? `<ul class="list card">${list.map((m) => `<li class="row"><span class="icon" aria-hidden="true">${icon(m.cardId ? 'card' : 'wallet')}</span><span class="grow"><span class="title">${m.last4 ? `Ending ${esc(m.last4)}` : `From ${esc(m.sender)}`}</span><span class="meta">→ ${esc(name(m))}</span></span><button type="button" class="icon-btn plain" data-action="deleteCardMap" data-id="${esc(m.id)}" aria-label="Remove ${m.last4 ? `ending ${esc(m.last4)}` : esc(m.sender)}">${icon('trash')}</button></li>`).join('')}</ul>` : ''}
     <form id="cardmap-form" data-form="cardMap" novalidate>
       <h3>Add</h3>
       <div class="two">${field('Card or account ending', '<input name="last4" inputmode="numeric" maxlength="4" placeholder="1234" autocomplete="off">')}${field('or sender', '<input name="sender" maxlength="80" placeholder="e.g. BPI" autocomplete="off" autocapitalize="off">')}</div>

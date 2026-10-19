@@ -130,11 +130,11 @@ export function txnRow(t, { showDate = true, ctx = '', walletId = '' } = {}) {
   const sub = [d.sub, showDate ? fmtDate(t.date) : ''].filter(Boolean).join(' · ');
   const sign = d.sign > 0 ? '+' : d.sign < 0 ? '−' : '';
   const badge = confirmedBadge(t);
-  return `<li class="row" role="button" tabindex="0" data-action="editTxn" data-id="${esc(t.id)}">
+  return `<li><button type="button" class="row" data-action="editTxn" data-id="${esc(t.id)}">
     <span class="icon" aria-hidden="true">${d.icon}</span>
     <span class="grow"><span class="title">${esc(d.title)}</span>${sub || badge ? `<span class="meta">${esc(sub)}${sub && badge ? ' · ' : ''}${badge}</span>` : ''}</span>
     <span class="num ${d.good ? 'pos' : ''}">${sign}${esc(peso(t.amount))}</span>
-  </li>`;
+  </button></li>`;
 }
 
 function dueRow(it) {
@@ -160,12 +160,12 @@ export function budgetRow(c, periodTxns) {
   const state = pct > 100 ? 'critical' : pct >= 80 ? 'warning' : '';
   const left = daysBetween(today(), S.period().end) + 1;
   const status = pct > 100 ? `Over by ${pw(spent - c.limit)}` : `${pw(c.limit - spent)} left`;
-  return `<li class="row" role="button" tabindex="0" data-action="catForm" data-id="${esc(c.id)}">
+  return `<li><button type="button" class="row" data-action="catForm" data-id="${esc(c.id)}">
     <span class="icon" aria-hidden="true">${esc(c.emoji)}</span>
     <span class="grow"><span class="row-line"><span class="title">${esc(c.name)}</span><span class="num">${pw(spent)} <small>of ${pw(c.limit)}</small></span></span>
       ${bar(pct, state, `${c.name} budget used`)}
       <span class="meta${state ? ` ${state}-text` : ''}">${status} · ${days(left)} to go</span></span>
-  </li>`;
+  </button></li>`;
 }
 
 export function goalPlanText(g) {
@@ -181,12 +181,12 @@ export function goalPlanText(g) {
 }
 export function goalRow(g) {
   const pct = Math.round(Math.max(0, Math.min(100, (g.saved / g.target) * 100)));
-  return `<li class="row" role="button" tabindex="0" data-action="goalSheet" data-id="${esc(g.id)}">
+  return `<li><button type="button" class="row" data-action="goalSheet" data-id="${esc(g.id)}">
     <span class="icon" aria-hidden="true">${esc(g.emoji || '🎯')}</span>
     <span class="grow"><span class="row-line"><span class="title">${esc(g.name)}</span><span class="num">${pw(g.saved)} <small>of ${pw(g.target)}</small></span></span>
       ${bar(pct, g.saved >= g.target ? 'good' : '', `${g.name} progress`)}
       <span class="meta">${pct}% · ${esc(goalPlanText(g))}${g.deadline ? ` · by ${esc(fmtDate(g.deadline))}` : ''}</span></span>
-  </li>`;
+  </button></li>`;
 }
 
 export function debtLeftText(d) {
@@ -208,32 +208,32 @@ function debtCard(d) {
       left = `${pw(Math.max(0, d.balance))} of ${pw(d.creditLimit)} limit used`;
     } else { progress = ''; left = debtLeftText(d); }
     if (d.nextDue && d.balance > 0) due = `${minDue(d) ? `Min ${pw(minDue(d))} · ` : ''}due ${fmtDate(d.nextDue)}`;
-    if (d.creditLimit > 0 && S.paymentsLeft(d) === Infinity) warn = `<p class="meta critical-text">${icon('alert')} Your planned payment doesn't cover the interest</p>`;
+    if (d.creditLimit > 0 && S.paymentsLeft(d) === Infinity) warn = `<span class="meta critical-text">${icon('alert')} Your planned payment doesn't cover the interest</span>`;
   } else {
     progress = d.original > 0 ? bar((1 - d.balance / d.original) * 100, 'good', 'Paid off so far') : '';
     left = debtLeftText(d);
     const pay = schedPay(d);
     if (d.nextDue && d.balance > 0) due = `${pay ? `${pw(Math.min(pay, d.balance))} ` : ''}due ${fmtDate(d.nextDue)}`;
   }
-  return `<li class="card debt ${st}" role="button" tabindex="0" data-action="debtSheet" data-id="${esc(d.id)}">
-    <div class="row-line"><span class="title">${esc(T.icon)} ${esc(d.name)}</span><span class="num big-ish">${pw(Math.max(0, d.balance))}</span></div>
-    <div class="row-line meta"><span>${esc(T.label)}${d.lender ? ` · ${esc(d.lender)}` : ''}</span>${statusChip(st)}</div>
+  return `<li><button type="button" class="card debt ${st}" data-action="debtSheet" data-id="${esc(d.id)}">
+    <span class="row-line"><span class="title">${esc(T.icon)} ${esc(d.name)}</span><span class="num big-ish">${pw(Math.max(0, d.balance))}</span></span>
+    <span class="row-line meta"><span>${esc(T.label)}${d.lender ? ` · ${esc(d.lender)}` : ''}</span>${statusChip(st)}</span>
     ${progress}
-    <div class="row-line meta"><span>${left}</span><span>${esc(due)}</span></div>
+    <span class="row-line meta"><span>${left}</span><span>${esc(due)}</span></span>
     ${warn}
-  </li>`;
+  </button></li>`;
 }
 
 export function receivableRow(r) {
   const p = S.receivableProgress(r);
   const late = r.dueDate && r.balance > 0 && r.dueDate < today();
   const meta = [r.balance <= 0 ? 'Paid back in full' : p.paid > 0 ? `${pw(p.paid)} of ${pw(p.total)} paid back` : '', r.dueDate && r.balance > 0 ? `${late ? 'Was due' : 'Due'} ${fmtDate(r.dueDate)}` : ''].filter(Boolean).join(' · ') || 'Nothing paid back yet';
-  return `<li class="row" role="button" tabindex="0" data-action="recvSheet" data-id="${esc(r.id)}">
+  return `<li><button type="button" class="row" data-action="recvSheet" data-id="${esc(r.id)}">
     <span class="icon accent" aria-hidden="true">${icon('person')}</span>
     <span class="grow"><span class="row-line"><span class="title">${esc(r.name)}</span><span class="num">${pw(Math.max(0, r.balance))}</span></span>
       ${p.paid > 0 ? bar(p.pct, 'good', `${r.name} paid back`) : ''}
       <span class="meta${late ? ' critical-text' : ''}">${esc(meta)}</span></span>
-  </li>`;
+  </button></li>`;
 }
 
 // ------------------------------------------------------------------ Home helpers
@@ -252,14 +252,14 @@ function setupCard(st) {
   return `<section aria-labelledby="setup-h"><h2 id="setup-h">Get set up <button class="link" data-action="hideSetup">Hide</button></h2>
     <ul class="list card">${st.items.map((i) => (i.done
     ? `<li class="row"><span class="icon good-text" aria-hidden="true">${icon('check')}</span><span class="grow"><span class="title muted">${i.label}</span><span class="meta">Done</span></span></li>`
-    : `<li class="row" role="button" tabindex="0" data-action="${i.action}" ${i.extra || ''}><span class="icon accent" aria-hidden="true">${icon('plus')}</span><span class="grow"><span class="title">${i.label}</span><span class="meta">${i.sub}</span></span><span class="chev" aria-hidden="true">${icon('right')}</span></li>`)).join('')}</ul></section>`;
+    : `<li><button type="button" class="row" data-action="${i.action}" ${i.extra || ''}><span class="icon accent" aria-hidden="true">${icon('plus')}</span><span class="grow"><span class="title">${i.label}</span><span class="meta">${i.sub}</span></span><span class="chev" aria-hidden="true">${icon('right')}</span></button></li>`)).join('')}</ul></section>`;
 }
 
 function heroCard(fs, hasMoney) {
   const when = '';
   if (!hasMoney) {
     return `<section class="hero spend" aria-label="Free to spend until payday"><div class="hero-top"><p class="label">Free to spend until payday</p>${when}</div>
-      <p class="big num" aria-label="Not known yet">—</p>
+      <p class="big num"><span aria-hidden="true">—</span><span class="sr-only">Not known yet</span></p>
       <p class="meta">Log your paycheck or enter what's in your wallets, and Pitaka shows what you can spend until payday.</p>
       <div class="actions"><button class="btn primary" data-action="logPaycheck">Log paycheck</button><button class="btn" data-action="balancesForm">Enter balances</button></div></section>`;
   }
@@ -278,7 +278,7 @@ function heroCard(fs, hasMoney) {
 function walletsRow() {
   const list = accounts();
   if (!list.length) return '';
-  return `<div class="wallets" aria-label="Wallets">${list.map((a) => { const b = S.accountBalance(a.id); return `<button class="wallet${b < 0 ? ' neg' : ''}" data-kind="${esc(a.kind)}" data-action="walletSheet" data-id="${esc(a.id)}"><span class="label"><i aria-hidden="true"></i>${esc(a.name)}</span><span class="num">${esc(peso(b))}</span></button>`; }).join('')}
+  return `<div class="wallets" role="group" aria-label="Wallets">${list.map((a) => { const b = S.accountBalance(a.id); return `<button class="wallet${b < 0 ? ' neg' : ''}" data-kind="${esc(a.kind)}" data-action="walletSheet" data-id="${esc(a.id)}"><span class="label"><i aria-hidden="true"></i>${esc(a.name)}</span><span class="num">${esc(peso(b))}</span></button>`; }).join('')}
     <button class="wallet add" data-action="walletForm">${icon('plus')}Add wallet</button></div>`;
 }
 
@@ -475,7 +475,7 @@ export function activityList() {
   if (!rows.length) return q || ui.filter !== 'all' ? `<p class="empty card">No entries match.</p>` : emptyState({ icon: 'receipt', title: 'Nothing here yet', text: 'Tap + to log an expense.' });
   const groups = {};
   for (const t of rows.slice(0, 600)) (groups[t.date] ||= []).push(t);
-  return Object.entries(groups).map(([d, ts]) => `<h3 class="date-h">${esc(fmtDate(d, { weekday: 'short', month: 'short', day: 'numeric' }))}</h3>
+  return Object.entries(groups).map(([d, ts]) => `<h2 class="h3 date-h">${esc(fmtDate(d, { weekday: 'short', month: 'short', day: 'numeric' }))}</h2>
     <ul class="list card">${ts.map((t) => txnRow(t, { showDate: false })).join('')}</ul>`).join('') + (rows.length > 600 ? `<p class="meta pad center">Showing the latest 600 entries. Search to find older ones.</p>` : '');
 }
 
@@ -496,11 +496,11 @@ const PLAN = {
       <ul class="list card" style="margin-top:12px">${bills.map((b) => {
         const late = !b.done && b.nextDue && b.nextDue < today();
         const when = b.done ? 'Done' : b.nextDue ? `${late ? 'Overdue · ' : ''}Due ${fmtDate(b.nextDue)} · ${relDay(b.nextDue)}` : 'No due date';
-        return `<li class="row" role="button" tabindex="0" data-action="billForm" data-id="${esc(b.id)}">
-          <span class="icon" aria-hidden="true">${esc(S.cat(b.categoryId).emoji)}</span>
+        return `<li class="row">
+          <button type="button" class="row-main" data-action="billForm" data-id="${esc(b.id)}"><span class="icon" aria-hidden="true">${esc(S.cat(b.categoryId).emoji)}</span>
           <span class="grow"><span class="title">${esc(b.name)}</span>
-          <span class="meta ${late ? 'critical-text' : ''}">${esc(when)} · ${esc(FREQS[b.frequency] || '')}</span></span>
-          <span class="col-end"><span class="num">${esc(peso(b.amount))}</span>${b.done ? '' : `<button class="btn small" data-action="payItem" data-kind="bill" data-id="${esc(b.id)}" aria-label="Pay ${esc(b.name)}">Pay</button>`}</span>
+          <span class="meta ${late ? 'critical-text' : ''}">${esc(when)} · ${esc(FREQS[b.frequency] || '')}</span><span class="sr-only">${esc(peso(b.amount))}</span></span></button>
+          <span class="col-end"><span class="num" aria-hidden="true">${esc(peso(b.amount))}</span>${b.done ? '' : `<button class="btn small" data-action="payItem" data-kind="bill" data-id="${esc(b.id)}" aria-label="Pay ${esc(b.name)}">Pay</button>`}</span>
         </li>`;
       }).join('')}</ul>
       <button class="btn block" data-action="billForm">${icon('plus')}New bill</button>`;
@@ -515,8 +515,8 @@ const PLAN = {
     return `<p class="meta pad">Limits for each 2-week pay period, now ${esc(fmtDate(p.start))} – ${esc(fmtDate(p.end))}.</p>
       ${withLimit.length ? `<div class="card budget-total"><div class="row-line"><span class="title">All budgets</span><span class="num">${pw(used)} <small>of ${pw(total)}</small></span></div>${bar((used / total) * 100, used > total ? 'critical' : used >= total * 0.8 ? 'warning' : '', 'All budgets used')}</div>
         <ul class="list card" style="margin-top:12px">${withLimit.map((c) => budgetRow(c, list)).join('')}</ul>` : ''}
-      ${others.length ? `<h3>No limit yet</h3><ul class="list card">${others.map((c) => `<li class="row" role="button" tabindex="0" data-action="catForm" data-id="${esc(c.id)}">
-        <span class="icon" aria-hidden="true">${esc(c.emoji)}</span><span class="grow"><span class="title">${esc(c.name)}</span><span class="meta">Tap to set a limit</span></span><span class="chev" aria-hidden="true">${icon('right')}</span></li>`).join('')}</ul>` : ''}
+      ${others.length ? `<h2 class="h3">No limit yet</h2><ul class="list card">${others.map((c) => `<li><button type="button" class="row" data-action="catForm" data-id="${esc(c.id)}">
+        <span class="icon" aria-hidden="true">${esc(c.emoji)}</span><span class="grow"><span class="title">${esc(c.name)}</span><span class="meta">Tap to set a limit</span></span><span class="chev" aria-hidden="true">${icon('right')}</span></button></li>`).join('')}</ul>` : ''}
       <button class="btn block" data-action="catManager">${icon('sliders')}Manage categories</button>`;
   },
 };
