@@ -1711,12 +1711,26 @@ function buildTxn(input, old) {
   return t;
 }
 
+// A lend can't shrink (by an edit or a delete) below what was already paid back of it: the repayment
+// would be for money never lent, and the person would owe a negative amount.
+const owedNow = (...ts) => new Map(ts.filter((t) => t?.kind === 'lend' && receivable(t.receivableId)).map((t) => [t.receivableId, receivable(t.receivableId).balance]));
+function keepOwed(before) {
+  for (const [id, was] of before) {
+    const r = receivable(id);
+    if (r && r.balance < -0.001 && r.balance < was - 0.001) {
+      const paid = sum(db.txns.filter((t) => t.kind === 'collect' && t.receivableId === id && !t.orphan), (t) => t.amount);
+      fail(`${r.name} already paid you back ${peso(paid)}. Lower or delete that repayment first`, 'amount');
+    }
+  }
+}
+
 export function saveTxn(input = {}) {
   return tx(() => {
     const old = isId(input.id) ? db.txns.find((t) => t.id === input.id) : null;
     const t = buildTxn(defined(input), old);
     let out = t;
     const oldTouched = !!old && touchesDebt(old);
+    const owed = owedNow(old);
     if (old) {
       touch('txns', old);
       revert(old);
@@ -1726,6 +1740,7 @@ export function saveTxn(input = {}) {
       added('txns', t);
     }
     apply(out);
+    keepOwed(owed);
     if (oldTouched || touchesDebt(out)) snap();
     return out;
   });
@@ -1738,9 +1753,11 @@ export function deleteTxn(id) {
     if (!t) return null;
     const copy = JSON.parse(JSON.stringify(t));
     const touched = touchesDebt(t);
+    const owed = owedNow(t);
     dropped('txns', t);
     revert(t);
     db.txns = db.txns.filter((x) => x !== t);
+    keepOwed(owed);
     if (touched) snap();
     return copy;
   });
