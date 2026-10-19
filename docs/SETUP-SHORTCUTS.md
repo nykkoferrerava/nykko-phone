@@ -11,9 +11,12 @@ log in anywhere, read other apps or decide anything. Pitaka picks everything up 
 
 ## Before you start
 
-- Set up your relay first (Settings → Inbox relay). Each shortcut needs its address and write token.
-- In the Files app, open **iCloud Drive → Shortcuts** and make a folder named `Pitaka`. Your shortcuts keep their lists and a backup copy of everything they send there.
-- Names below are the actions as the iOS 26 Shortcuts app shows them: search for them with the search field at the bottom of the shortcut editor.
+- Set up your relay first (in Pitaka: Settings → Inbox relay). Each shortcut needs its address and write token.
+- In the Files app, open **iCloud Drive → Shortcuts** and make a folder named `Pitaka`. Your shortcuts keep their lists and a backup copy of everything they send there. Their file actions use that **Shortcuts** folder: if one shows a different Folder, tap it and choose iCloud Drive → Shortcuts.
+- Names below are the actions as the iOS 26 Shortcuts app shows them. Find each one with the search field at the bottom of the shortcut editor. A new action goes at the end; drag it to move it.
+- When you tap a field, the bar above the keyboard has **Select Variable** and items like **Current Date** and **Shortcut Input** (swipe it sideways for more). Tap a variable after inserting it to choose a format or a detail.
+- "Tap the arrow" means the arrow on an action that shows its other options (Apple's guide calls it **Show More**).
+- The first time a shortcut uses your relay or the Pitaka folder, Shortcuts asks for permission: tap **Always Allow**. Run each automation once with ▶ (its Test step) so you get to answer.
 
 ## Quick Add – Keypad
 
@@ -21,12 +24,12 @@ log in anywhere, read other apps or decide anything. Pitaka picks everything up 
 
 ### Set up
 
-1. Shortcuts → **+** (new shortcut). Name it `Pitaka Keypad`.
+1. Shortcuts → **+** (top right). Tap the name at the top (**New Shortcut**) → **Rename**, and type `Pitaka Keypad`.
 
 ### Actions, in order
 
-1. **Get File** — Turn off **Show Document Picker**. File Path `Pitaka/config.json`. Turn off **Error If Not Found**.
-2. **If** — Input **File**, condition **has any value**.
+1. **Get File from Folder** — Folder **Shortcuts**, path `Pitaka/config.json`. Turn off **Error If Not Found**.
+2. **If** — Input **File**, condition **has any value**. Shortcuts adds Otherwise and End If below it: the next actions go between If and Otherwise (drag them there).
 3. **Get Dictionary from Input** — Input **File**.
 4. **Set Variable** — Variable Name `Config`.
 5. **Get Dictionary Value** — Get **Value** for `categories` in **Config**.
@@ -51,18 +54,18 @@ log in anywhere, read other apps or decide anything. Pitaka picks everything up 
 14. **Split Text** — Split **Text** by **New Lines**.
 15. **Set Variable** — Variable Name `Wallets`.
 16. **End If** — Already there: Shortcuts added it with the If.
-17. **Ask for Input** — Input Type **Number**. Prompt `Amount ₱`.
+17. **Ask for Input** — Input Type **Number**. Prompt `Amount ₱`. Tap the arrow and check that **Allow Decimal Numbers** is on.
 18. **Set Variable** — Variable Name `Amount`.
-19. **Choose from List** — List **Categories**. Prompt `Category`.
+19. **Choose from List** — List **Categories**. Tap the arrow: Prompt `Category`.
 20. **Set Variable** — Variable Name `Category`.
-21. **Choose from List** — List **Wallets**. Prompt `Wallet or card`.
+21. **Choose from List** — List **Wallets**. Tap the arrow: Prompt `Wallet or card`.
 22. **Set Variable** — Variable Name `Wallet`.
-23. **Ask for Input** — Input Type **Text**. Prompt `Note (optional)`.
+23. **Ask for Input** — Input Type **Text**. Prompt `Note (optional)`. When it runs, you can leave the note empty.
 24. **Set Variable** — Variable Name `Note`.
 25. **Random Number** — Minimum `100000`, Maximum `999999`.
 26. **Text** — Type `kp-`, insert **Current Date** (tap it: Date Format **Custom**, Format String `yyyyMMddHHmmss`), type `-`, insert **Random Number**.
 27. **Set Variable** — Variable Name `ID`. Pitaka uses it to never add the same thing twice.
-28. **Dictionary** — Add these keys (all **Text**):
+28. **Dictionary** — Tap **Add new item** → **Text** for each key below.
 
    | Key | Value |
    | --- | --- |
@@ -74,23 +77,34 @@ log in anywhere, read other apps or decide anything. Pitaka picks everything up 
    | `note` | **Note** |
    | `at` | **Current Date** (tap it: Date Format **ISO 8601**, Include ISO 8601 Time **on**) |
 
-29. **Append to Text File** — Append **Dictionary** to File Path `Pitaka/inbox.jsonl`. Turn on **Make New Line**. This copy in iCloud Drive is your backup for when the relay can't be reached.
+29. **Append to Text File** — Append **Dictionary**. Folder **Shortcuts**, File Path `Pitaka/inbox.jsonl`. Turn on **Make New Line**. This copy in iCloud Drive is your backup for when the relay can't be reached.
 30. **Show Notification** — Type `₱`, insert **Amount**, type ` · `, insert **Category**, type ` · `, insert **Wallet**, type ` saved`.
-31. **Get Contents of URL** — URL below. Tap the arrow: Method **POST**; Headers: add one, Key `Authorization`, Value below; Request Body **File**, choose **Dictionary**.
+31. **Get Contents of URL** — Paste the URL below. Tap the arrow to show more: Method **POST**. Headers: **Add new header**, Key `Authorization`, value below. Request Body **JSON**: add a **Text** field for each key below, with the same value you gave it in the Dictionary.
 
    `<your relay address>/in`
 
    Authorization value: `Bearer <your write token>`
-32. **Get Contents of URL** — URL below. Tap the arrow: Method **GET**; Headers: Key `Authorization`, the same Value as above. This fetches your latest lists from Pitaka.
+
+   | Key | Value |
+   | --- | --- |
+   | `type` | `entry` |
+   | `id` | **ID** |
+   | `amount` | **Amount** |
+   | `category` | **Category** |
+   | `wallet` | **Wallet** |
+   | `note` | **Note** |
+   | `at` | **Current Date** (tap it: Date Format **ISO 8601**, Include ISO 8601 Time **on**) |
+
+32. **Get Contents of URL** — Paste the URL below. Tap the arrow to show more: Method **GET**. Headers: **Add new header**, Key `Authorization`, the same value as above. This fetches your latest lists from Pitaka.
 
    `<your relay address>/config`
 
    Authorization value: `Bearer <your write token>`
-33. **Save File** — Turn off **Ask Where to Save**. Destination Path `Pitaka/config.json`. Turn on **Overwrite If File Exists**.
+33. **Save File** — Turn off **Ask Where to Save**. Folder **Shortcuts**, Subpath `Pitaka/config.json`. Turn on **Overwrite If File Exists**.
 
 ### Then
 
-- Settings → **Accessibility** → **Touch** → **Back Tap** → **Double Tap** → choose **Pitaka Keypad**.
+- In the iPhone **Settings** app: **Accessibility** → **Touch** → **Back Tap** → **Double Tap** → under Shortcuts, choose **Pitaka Keypad**.
 
 ### Test it
 
@@ -102,7 +116,7 @@ Run it, enter `1`, any category and wallet, and the note `test`. A test never be
 
 ### Set up
 
-1. Shortcuts → **+**. Name it `Pitaka Text`.
+1. Shortcuts → **+** (top right). Tap the name at the top (**New Shortcut**) → **Rename**, and type `Pitaka Text`.
 
 ### Actions, in order
 
@@ -111,7 +125,7 @@ Run it, enter `1`, any category and wallet, and the note `test`. A test never be
 3. **Random Number** — Minimum `100000`, Maximum `999999`.
 4. **Text** — Type `qt-`, insert **Current Date** (tap it: Date Format **Custom**, Format String `yyyyMMddHHmmss`), type `-`, insert **Random Number**.
 5. **Set Variable** — Variable Name `ID`. Pitaka uses it to never add the same thing twice.
-6. **Dictionary** — Add these keys (all **Text**):
+6. **Dictionary** — Tap **Add new item** → **Text** for each key below.
 
    | Key | Value |
    | --- | --- |
@@ -120,17 +134,24 @@ Run it, enter `1`, any category and wallet, and the note `test`. A test never be
    | `text` | **Said** |
    | `at` | **Current Date** (tap it: Date Format **ISO 8601**, Include ISO 8601 Time **on**) |
 
-7. **Append to Text File** — Append **Dictionary** to File Path `Pitaka/inbox.jsonl`. Turn on **Make New Line**. This copy in iCloud Drive is your backup for when the relay can't be reached.
+7. **Append to Text File** — Append **Dictionary**. Folder **Shortcuts**, File Path `Pitaka/inbox.jsonl`. Turn on **Make New Line**. This copy in iCloud Drive is your backup for when the relay can't be reached.
 8. **Show Notification** — Type `Sent to Pitaka: `, insert **Said**.
-9. **Get Contents of URL** — URL below. Tap the arrow: Method **POST**; Headers: add one, Key `Authorization`, Value below; Request Body **File**, choose **Dictionary**.
+9. **Get Contents of URL** — Paste the URL below. Tap the arrow to show more: Method **POST**. Headers: **Add new header**, Key `Authorization`, value below. Request Body **JSON**: add a **Text** field for each key below, with the same value you gave it in the Dictionary.
 
    `<your relay address>/in`
 
    Authorization value: `Bearer <your write token>`
 
+   | Key | Value |
+   | --- | --- |
+   | `type` | `text` |
+   | `id` | **ID** |
+   | `text` | **Said** |
+   | `at` | **Current Date** (tap it: Date Format **ISO 8601**, Include ISO 8601 Time **on**) |
+
 ### Then
 
-- Settings → **Accessibility** → **Touch** → **Back Tap** → **Triple Tap** → choose **Pitaka Text**.
+- In the iPhone **Settings** app: **Accessibility** → **Touch** → **Back Tap** → **Triple Tap** → under Shortcuts, choose **Pitaka Text**.
 
 ### Test it
 
@@ -142,12 +163,12 @@ Run it and type `test`. In Pitaka, open Settings → Connect your iPhone → Qui
 
 ### Set up
 
-1. Shortcuts → **+**. Name it `Pitaka Balance`. Add it to your Home Screen or to the Shortcuts widget if you like.
+1. Shortcuts → **+** (top right). Tap the name at the top (**New Shortcut**) → **Rename**, and type `Pitaka Balance`. Add it to your Home Screen or to the Shortcuts widget if you like.
 
 ### Actions, in order
 
-1. **Get File** — Turn off **Show Document Picker**. File Path `Pitaka/config.json`. Turn off **Error If Not Found**.
-2. **If** — Input **File**, condition **has any value**.
+1. **Get File from Folder** — Folder **Shortcuts**, path `Pitaka/config.json`. Turn off **Error If Not Found**.
+2. **If** — Input **File**, condition **has any value**. Shortcuts adds Otherwise and End If below it: the next actions go between If and Otherwise (drag them there).
 3. **Get Dictionary from Input** — Input **File**.
 4. **Set Variable** — Variable Name `Config`.
 5. **Get Dictionary Value** — Get **Value** for `wallets` in **Config**.
@@ -162,14 +183,14 @@ Run it and type `test`. In Pitaka, open Settings → Connect your iPhone → Qui
 9. **Split Text** — Split **Text** by **New Lines**.
 10. **Set Variable** — Variable Name `Wallets`.
 11. **End If** — Already there: Shortcuts added it with the If.
-12. **Choose from List** — List **Wallets**. Prompt `Which wallet?`
+12. **Choose from List** — List **Wallets**. Tap the arrow: Prompt `Which wallet?`
 13. **Set Variable** — Variable Name `Wallet`.
-14. **Ask for Input** — Input Type **Number**. Prompt `Balance the app shows ₱`.
+14. **Ask for Input** — Input Type **Number**. Prompt `Balance the app shows ₱`. Tap the arrow and check that **Allow Decimal Numbers** is on.
 15. **Set Variable** — Variable Name `Balance`.
 16. **Random Number** — Minimum `100000`, Maximum `999999`.
 17. **Text** — Type `bal-`, insert **Current Date** (tap it: Date Format **Custom**, Format String `yyyyMMddHHmmss`), type `-`, insert **Random Number**.
 18. **Set Variable** — Variable Name `ID`. Pitaka uses it to never add the same thing twice.
-19. **Dictionary** — Add these keys (all **Text**):
+19. **Dictionary** — Tap **Add new item** → **Text** for each key below.
 
    | Key | Value |
    | --- | --- |
@@ -179,19 +200,28 @@ Run it and type `test`. In Pitaka, open Settings → Connect your iPhone → Qui
    | `amount` | **Balance** |
    | `at` | **Current Date** (tap it: Date Format **ISO 8601**, Include ISO 8601 Time **on**) |
 
-20. **Append to Text File** — Append **Dictionary** to File Path `Pitaka/inbox.jsonl`. Turn on **Make New Line**. This copy in iCloud Drive is your backup for when the relay can't be reached.
+20. **Append to Text File** — Append **Dictionary**. Folder **Shortcuts**, File Path `Pitaka/inbox.jsonl`. Turn on **Make New Line**. This copy in iCloud Drive is your backup for when the relay can't be reached.
 21. **Show Notification** — Type `Balance sent: `, insert **Wallet**, type ` ₱`, insert **Balance**.
-22. **Get Contents of URL** — URL below. Tap the arrow: Method **POST**; Headers: add one, Key `Authorization`, Value below; Request Body **File**, choose **Dictionary**.
+22. **Get Contents of URL** — Paste the URL below. Tap the arrow to show more: Method **POST**. Headers: **Add new header**, Key `Authorization`, value below. Request Body **JSON**: add a **Text** field for each key below, with the same value you gave it in the Dictionary.
 
    `<your relay address>/in`
 
    Authorization value: `Bearer <your write token>`
-23. **Get Contents of URL** — URL below. Tap the arrow: Method **GET**; Headers: Key `Authorization`, the same Value as above. This fetches your latest lists from Pitaka.
+
+   | Key | Value |
+   | --- | --- |
+   | `type` | `balance` |
+   | `id` | **ID** |
+   | `wallet` | **Wallet** |
+   | `amount` | **Balance** |
+   | `at` | **Current Date** (tap it: Date Format **ISO 8601**, Include ISO 8601 Time **on**) |
+
+23. **Get Contents of URL** — Paste the URL below. Tap the arrow to show more: Method **GET**. Headers: **Add new header**, Key `Authorization`, the same value as above. This fetches your latest lists from Pitaka.
 
    `<your relay address>/config`
 
    Authorization value: `Bearer <your write token>`
-24. **Save File** — Turn off **Ask Where to Save**. Destination Path `Pitaka/config.json`. Turn on **Overwrite If File Exists**.
+24. **Save File** — Turn off **Ask Where to Save**. Folder **Shortcuts**, Subpath `Pitaka/config.json`. Turn on **Overwrite If File Exists**.
 
 ### Test it
 
@@ -203,17 +233,17 @@ Run it and type the balance your app shows right now. In Pitaka, open Settings �
 
 ### Set up
 
-1. Shortcuts → **Automation** → **+** (New Automation).
-2. **Message** → **Sender**: choose the bank (save its number as a contact first if you need to). Or **Message Contains**: a word every alert from it has.
-3. Choose **Run Immediately** and turn off **Notify When Run**. Tap **Next**, then **New Blank Automation**, and add the actions below.
-4. Make one automation for each sender: GCash, GoTyme, Maya, BPI, BDO, UnionBank, Metrobank, Security Bank, RCBC, SeaBank, CIMB.
+1. Shortcuts → **Automation** → **+** (top right; the first time it's **New Automation**).
+2. **Message** → **Message Contains**: a word that every alert from that bank has, typed the way the alerts write it (for example `GCash`). Or use **Sender** if the bank texts you from a number saved in your contacts.
+3. Choose **Run Immediately**. If **Notify When Run** is there, turn it off (for Message and Email automations iOS may show a notification each time anyway). Tap **Next**, then **New Blank Automation**, and add the actions below.
+4. Make one automation for each bank that texts you: GCash, GoTyme, Maya, BPI, BDO, UnionBank, Metrobank, Security Bank, RCBC, SeaBank, CIMB.
 
 ### Actions, in order
 
 1. **Random Number** — Minimum `100000`, Maximum `999999`.
 2. **Text** — Type `sms-`, insert **Current Date** (tap it: Date Format **Custom**, Format String `yyyyMMddHHmmss`), type `-`, insert **Random Number**.
 3. **Set Variable** — Variable Name `ID`. Pitaka uses it to never add the same thing twice.
-4. **Dictionary** — Add these keys (all **Text**). For **sender**, type the bank's name exactly as listed above, like `GCash`.
+4. **Dictionary** — Tap **Add new item** → **Text** for each key below. For **sender**, type the bank's name exactly as listed above, like `GCash`.
 
    | Key | Value |
    | --- | --- |
@@ -223,12 +253,20 @@ Run it and type the balance your app shows right now. In Pitaka, open Settings �
    | `text` | **Shortcut Input** (tap it: **Content**) |
    | `at` | **Current Date** (tap it: Date Format **ISO 8601**, Include ISO 8601 Time **on**) |
 
-5. **Append to Text File** — Append **Dictionary** to File Path `Pitaka/inbox.jsonl`. Turn on **Make New Line**. This copy in iCloud Drive is your backup for when the relay can't be reached.
-6. **Get Contents of URL** — URL below. Tap the arrow: Method **POST**; Headers: add one, Key `Authorization`, Value below; Request Body **File**, choose **Dictionary**.
+5. **Append to Text File** — Append **Dictionary**. Folder **Shortcuts**, File Path `Pitaka/inbox.jsonl`. Turn on **Make New Line**. This copy in iCloud Drive is your backup for when the relay can't be reached.
+6. **Get Contents of URL** — Paste the URL below. Tap the arrow to show more: Method **POST**. Headers: **Add new header**, Key `Authorization`, value below. Request Body **JSON**: add a **Text** field for each key below, with the same value you gave it in the Dictionary.
 
    `<your relay address>/in`
 
    Authorization value: `Bearer <your write token>`
+
+   | Key | Value |
+   | --- | --- |
+   | `type` | `sms` |
+   | `id` | **ID** |
+   | `sender` | `GCash` (the bank this automation is for) |
+   | `text` | **Shortcut Input** (tap it: **Content**) |
+   | `at` | **Current Date** (tap it: Date Format **ISO 8601**, Include ISO 8601 Time **on**) |
 
 ### Test it
 
@@ -236,20 +274,20 @@ In the automation, tap ▶ (play). It runs without a message, which Pitaka count
 
 ## Email alerts (optional)
 
-**When an alert email arrives in Mail.** For banks that email instead of texting. Same matching as SMS. Only the sender, subject and text of alert emails are sent.
+**When an alert email arrives in Mail.** For banks that email instead of texting. Same matching as SMS. Only the sender, subject and text of alert emails are sent. It only sees mail that arrives in Apple's Mail app.
 
 ### Set up
 
-1. Shortcuts → **Automation** → **+** (New Automation).
+1. Shortcuts → **Automation** → **+** (top right; the first time it's **New Automation**).
 2. **Email** → **Sender**: the bank's alert address (or **Subject Contains**: a word in every alert subject).
-3. Choose **Run Immediately** and turn off **Notify When Run**. Tap **Next**, then **New Blank Automation**, and add the actions below.
+3. Choose **Run Immediately**. If **Notify When Run** is there, turn it off (for Message and Email automations iOS may show a notification each time anyway). Tap **Next**, then **New Blank Automation**, and add the actions below.
 
 ### Actions, in order
 
 1. **Random Number** — Minimum `100000`, Maximum `999999`.
 2. **Text** — Type `em-`, insert **Current Date** (tap it: Date Format **Custom**, Format String `yyyyMMddHHmmss`), type `-`, insert **Random Number**.
 3. **Set Variable** — Variable Name `ID`. Pitaka uses it to never add the same thing twice.
-4. **Dictionary** — Add these keys (all **Text**):
+4. **Dictionary** — Tap **Add new item** → **Text** for each key below.
 
    | Key | Value |
    | --- | --- |
@@ -257,15 +295,24 @@ In the automation, tap ▶ (play). It runs without a message, which Pitaka count
    | `id` | **ID** |
    | `from` | **Shortcut Input** (tap it: **Sender**) |
    | `subject` | **Shortcut Input** (tap it: **Subject**) |
-   | `body` | **Shortcut Input** (tap it: the message text) |
+   | `body` | **Shortcut Input** (tap it: **Content**) |
    | `at` | **Current Date** (tap it: Date Format **ISO 8601**, Include ISO 8601 Time **on**) |
 
-5. **Append to Text File** — Append **Dictionary** to File Path `Pitaka/inbox.jsonl`. Turn on **Make New Line**. This copy in iCloud Drive is your backup for when the relay can't be reached.
-6. **Get Contents of URL** — URL below. Tap the arrow: Method **POST**; Headers: add one, Key `Authorization`, Value below; Request Body **File**, choose **Dictionary**.
+5. **Append to Text File** — Append **Dictionary**. Folder **Shortcuts**, File Path `Pitaka/inbox.jsonl`. Turn on **Make New Line**. This copy in iCloud Drive is your backup for when the relay can't be reached.
+6. **Get Contents of URL** — Paste the URL below. Tap the arrow to show more: Method **POST**. Headers: **Add new header**, Key `Authorization`, value below. Request Body **JSON**: add a **Text** field for each key below, with the same value you gave it in the Dictionary.
 
    `<your relay address>/in`
 
    Authorization value: `Bearer <your write token>`
+
+   | Key | Value |
+   | --- | --- |
+   | `type` | `email` |
+   | `id` | **ID** |
+   | `from` | **Shortcut Input** (tap it: **Sender**) |
+   | `subject` | **Shortcut Input** (tap it: **Subject**) |
+   | `body` | **Shortcut Input** (tap it: **Content**) |
+   | `at` | **Current Date** (tap it: Date Format **ISO 8601**, Include ISO 8601 Time **on**) |
 
 ### Test it
 
@@ -273,20 +320,20 @@ In the automation, tap ▶ (play). In Pitaka, open Settings → Connect your iPh
 
 ## Apple Wallet (optional)
 
-**When you tap a card in Apple Wallet.** If your card supports transaction automations, each tap-to-pay is sent the moment it happens. Many Philippine cards don't offer this; if the card isn't listed, skip it.
+**When you tap a card in Apple Wallet.** Each tap-to-pay with a card in Apple Wallet is sent the moment it happens. If the automation doesn't list any of your cards, skip this. The trigger is known to miss some payments, so keep your SMS or email alerts too.
 
 ### Set up
 
-1. Shortcuts → **Automation** → **+** (New Automation).
-2. **Transaction** → choose your cards → leave the categories as they are.
-3. Choose **Run Immediately** and turn off **Notify When Run**. Tap **Next**, then **New Blank Automation**, and add the actions below.
+1. Shortcuts → **Automation** → **+** (top right; the first time it's **New Automation**).
+2. **Transaction** (it may say **Wallet**) → **When I tap**: choose your cards. Leave the categories and merchants as they are.
+3. Choose **Run Immediately**. If **Notify When Run** is there, turn it off (for Message and Email automations iOS may show a notification each time anyway). Tap **Next**, then **New Blank Automation**, and add the actions below.
 
 ### Actions, in order
 
 1. **Random Number** — Minimum `100000`, Maximum `999999`.
 2. **Text** — Type `wl-`, insert **Current Date** (tap it: Date Format **Custom**, Format String `yyyyMMddHHmmss`), type `-`, insert **Random Number**.
 3. **Set Variable** — Variable Name `ID`. Pitaka uses it to never add the same thing twice.
-4. **Dictionary** — Add these keys (all **Text**):
+4. **Dictionary** — Tap **Add new item** → **Text** for each key below.
 
    | Key | Value |
    | --- | --- |
@@ -297,12 +344,21 @@ In the automation, tap ▶ (play). In Pitaka, open Settings → Connect your iPh
    | `card` | **Shortcut Input** (tap it: **Card or Pass**) |
    | `at` | **Current Date** (tap it: Date Format **ISO 8601**, Include ISO 8601 Time **on**) |
 
-5. **Append to Text File** — Append **Dictionary** to File Path `Pitaka/inbox.jsonl`. Turn on **Make New Line**. This copy in iCloud Drive is your backup for when the relay can't be reached.
-6. **Get Contents of URL** — URL below. Tap the arrow: Method **POST**; Headers: add one, Key `Authorization`, Value below; Request Body **File**, choose **Dictionary**.
+5. **Append to Text File** — Append **Dictionary**. Folder **Shortcuts**, File Path `Pitaka/inbox.jsonl`. Turn on **Make New Line**. This copy in iCloud Drive is your backup for when the relay can't be reached.
+6. **Get Contents of URL** — Paste the URL below. Tap the arrow to show more: Method **POST**. Headers: **Add new header**, Key `Authorization`, value below. Request Body **JSON**: add a **Text** field for each key below, with the same value you gave it in the Dictionary.
 
    `<your relay address>/in`
 
    Authorization value: `Bearer <your write token>`
+
+   | Key | Value |
+   | --- | --- |
+   | `type` | `wallet` |
+   | `id` | **ID** |
+   | `merchant` | **Shortcut Input** (tap it: **Merchant**) |
+   | `amount` | **Shortcut Input** (tap it: **Amount**) |
+   | `card` | **Shortcut Input** (tap it: **Card or Pass**) |
+   | `at` | **Current Date** (tap it: Date Format **ISO 8601**, Include ISO 8601 Time **on**) |
 
 ### Test it
 
@@ -311,7 +367,8 @@ In the automation, tap ▶ (play). In Pitaka, open Settings → Connect your iPh
 ## When something doesn't arrive
 
 - **No relay, or offline:** everything is still in iCloud Drive/Shortcuts/Pitaka/inbox.jsonl. In Pitaka: Settings → Inbox and alerts → **Import from Files**. Nothing is added twice.
-- **"Couldn't connect" in Shortcuts:** check the relay address and token (Settings → Inbox relay → Copy), and that you're online.
-- **401 / wrong token:** the write token changed (you made a new one, or paired again). Paste the new one into each Get Contents of URL.
+- **Shortcuts shows an error at Get Contents of URL:** check the relay address and write token (in Pitaka: Settings → Inbox relay → Copy), and that you're online. The backup copy was already saved.
+- **The shortcut runs, but Test never shows ✓:** the write token probably changed (you made a new one, or paired again). Paste the new one into each Get Contents of URL.
+- **Choose from List has nothing to choose:** the last fetch of your lists failed, usually because of the write token. Fix the token in both Get Contents of URL actions, then in the Files app delete iCloud Drive → Shortcuts → Pitaka → config.json. The next run uses the lists typed into the shortcut and fetches them again.
 - **An alert landed in Review as "Unknown format":** tap **Teach** and mark the amount, merchant and balance. Pitaka reads that format from then on.
 

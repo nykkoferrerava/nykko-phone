@@ -6,6 +6,10 @@
 // anything. Each one also appends the same line to iCloud Drive/Shortcuts/Pitaka/inbox.jsonl, so nothing
 // is lost when the relay can't be reached (Settings -> Inbox and alerts -> Import from Files).
 //
+// Action names and labels follow the iOS 26 Shortcuts app: Apple's Shortcuts User Guide for iOS 26 and the
+// actions' own parameter names. Where Apple doesn't say what the app shows, the text says so instead of
+// guessing.
+//
 // Placeholders filled in by fill(): {URL} relay address, {TOKEN} write token, {CATEGORIES} and
 // {WALLETS} your lists, one per line.
 
@@ -15,9 +19,11 @@ export const CONFIG_FILE = `${FOLDER}/config.json`;
 export const INSTITUTIONS = ['GCash', 'GoTyme', 'Maya', 'BPI', 'BDO', 'UnionBank', 'Metrobank', 'Security Bank', 'RCBC', 'SeaBank', 'CIMB'];
 
 // A step: { a: action name as Shortcuts shows it, d: what to set (`code` is typed exactly, **bold** is a
-// menu choice or a variable), copy: text for a Copy button, keys: [[key, value]] for a Dictionary }.
+// menu choice or a variable), copy: text for a Copy button, keys: [[key, value]] for a Dictionary or a
+// JSON request body }.
 const step = (a, d, extra = {}) => ({ a, d, ...extra });
 const at = ['at', '**Current Date** (tap it: Date Format **ISO 8601**, Include ISO 8601 Time **on**)'];
+const bearer = ['Authorization value', 'Bearer {TOKEN}'];
 
 const id = (prefix) => [
   step('Random Number', 'Minimum `100000`, Maximum `999999`.'),
@@ -25,8 +31,8 @@ const id = (prefix) => [
   step('Set Variable', 'Variable Name `ID`. Pitaka uses it to never add the same thing twice.'),
 ];
 const lists = (which = ['categories', 'wallets']) => [
-  step('Get File', `Turn off **Show Document Picker**. File Path \`${CONFIG_FILE}\`. Turn off **Error If Not Found**.`, { copy: CONFIG_FILE }),
-  step('If', 'Input **File**, condition **has any value**.'),
+  step('Get File from Folder', `Folder **Shortcuts**, path \`${CONFIG_FILE}\`. Turn off **Error If Not Found**.`, { copy: CONFIG_FILE }),
+  step('If', 'Input **File**, condition **has any value**. Shortcuts adds Otherwise and End If below it: the next actions go between If and Otherwise (drag them there).'),
   step('Get Dictionary from Input', 'Input **File**.'),
   step('Set Variable', 'Variable Name `Config`.'),
   ...which.flatMap((k) => [
@@ -41,77 +47,93 @@ const lists = (which = ['categories', 'wallets']) => [
   ]),
   step('End If', 'Already there: Shortcuts added it with the If.'),
 ];
-const save = step('Append to Text File', `Append **Dictionary** to File Path \`${INBOX_FILE}\`. Turn on **Make New Line**. This copy in iCloud Drive is your backup for when the relay can't be reached.`, { copy: INBOX_FILE });
-const post = step('Get Contents of URL', 'URL below. Tap the arrow: Method **POST**; Headers: add one, Key `Authorization`, Value below; Request Body **File**, choose **Dictionary**.', { copy: '{URL}/in', copy2: ['Authorization value', 'Bearer {TOKEN}'] });
+const amount = (prompt) => step('Ask for Input', `Input Type **Number**. Prompt \`${prompt}\`. Tap the arrow and check that **Allow Decimal Numbers** is on.`, { copy: prompt });
+const dictionary = (keys, extra = '') => step('Dictionary', `Tap **Add new item** → **Text** for each key below${extra}.`, { keys });
+const save = step('Append to Text File', `Append **Dictionary**. Folder **Shortcuts**, File Path \`${INBOX_FILE}\`. Turn on **Make New Line**. This copy in iCloud Drive is your backup for when the relay can't be reached.`, { copy: INBOX_FILE });
+// The body is JSON fields rather than the Dictionary as a File: Apple doesn't document what a Dictionary
+// sends as a File body, while JSON fields go out as a JSON object, which is what the relay reads.
+const post = (keys) => step('Get Contents of URL', 'Paste the URL below. Tap the arrow to show more: Method **POST**. Headers: **Add new header**, Key `Authorization`, value below. Request Body **JSON**: add a **Text** field for each key below, with the same value you gave it in the Dictionary.', { copy: '{URL}/in', copy2: bearer, keys });
 const refresh = [
-  step('Get Contents of URL', 'URL below. Tap the arrow: Method **GET**; Headers: Key `Authorization`, the same Value as above. This fetches your latest lists from Pitaka.', { copy: '{URL}/config', copy2: ['Authorization value', 'Bearer {TOKEN}'] }),
-  step('Save File', `Turn off **Ask Where to Save**. Destination Path \`${CONFIG_FILE}\`. Turn on **Overwrite If File Exists**.`, { copy: CONFIG_FILE }),
+  step('Get Contents of URL', 'Paste the URL below. Tap the arrow to show more: Method **GET**. Headers: **Add new header**, Key `Authorization`, the same value as above. This fetches your latest lists from Pitaka.', { copy: '{URL}/config', copy2: bearer }),
+  step('Save File', `Turn off **Ask Where to Save**. Folder **Shortcuts**, Subpath \`${CONFIG_FILE}\`. Turn on **Overwrite If File Exists**.`, { copy: CONFIG_FILE }),
 ];
+// Creating an automation in iOS 26 (Shortcuts User Guide: "Create a new personal automation").
 const automation = (trigger) => [
-  'Shortcuts → **Automation** → **+** (New Automation).',
+  'Shortcuts → **Automation** → **+** (top right; the first time it\'s **New Automation**).',
   trigger,
-  'Choose **Run Immediately** and turn off **Notify When Run**. Tap **Next**, then **New Blank Automation**, and add the actions below.',
+  'Choose **Run Immediately**. If **Notify When Run** is there, turn it off (for Message and Email automations iOS may show a notification each time anyway). Tap **Next**, then **New Blank Automation**, and add the actions below.',
 ];
+const sends = (keys, dictNote) => [dictionary(keys, dictNote), save, post(keys)];
+const newShortcut = (name, more = '') => `Shortcuts → **+** (top right). Tap the name at the top (**New Shortcut**) → **Rename**, and type \`${name}\`.${more}`;
+
+const KEYS = {
+  keypad: [['type', '`entry`'], ['id', '**ID**'], ['amount', '**Amount**'], ['category', '**Category**'], ['wallet', '**Wallet**'], ['note', '**Note**'], at],
+  text: [['type', '`text`'], ['id', '**ID**'], ['text', '**Said**'], at],
+  balance: [['type', '`balance`'], ['id', '**ID**'], ['wallet', '**Wallet**'], ['amount', '**Balance**'], at],
+  sms: [['type', '`sms`'], ['id', '**ID**'], ['sender', '`GCash` (the bank this automation is for)'], ['text', '**Shortcut Input** (tap it: **Content**)'], at],
+  email: [['type', '`email`'], ['id', '**ID**'], ['from', '**Shortcut Input** (tap it: **Sender**)'], ['subject', '**Shortcut Input** (tap it: **Subject**)'], ['body', '**Shortcut Input** (tap it: **Content**)'], at],
+  wallet: [['type', '`wallet`'], ['id', '**ID**'], ['merchant', '**Shortcut Input** (tap it: **Merchant**)'], ['amount', '**Shortcut Input** (tap it: **Amount**)'], ['card', '**Shortcut Input** (tap it: **Card or Pass**)'], at],
+};
 
 export const SHORTCUTS = [
   {
     id: 'keypad', title: 'Quick Add – Keypad', name: 'Pitaka Keypad', icon: 'vibrate', types: ['entry'],
     when: 'Double-tap the back of your iPhone',
     what: 'Asks for the amount, the category and the wallet, then sends them to Pitaka. About five seconds, without opening Pitaka.',
-    setup: ['Shortcuts → **+** (new shortcut). Name it `Pitaka Keypad`.'],
+    setup: [newShortcut('Pitaka Keypad')],
     steps: [
       ...lists(),
-      step('Ask for Input', 'Input Type **Number**. Prompt `Amount ₱`.', { copy: 'Amount ₱' }),
+      amount('Amount ₱'),
       step('Set Variable', 'Variable Name `Amount`.'),
-      step('Choose from List', 'List **Categories**. Prompt `Category`.'),
+      step('Choose from List', 'List **Categories**. Tap the arrow: Prompt `Category`.'),
       step('Set Variable', 'Variable Name `Category`.'),
-      step('Choose from List', 'List **Wallets**. Prompt `Wallet or card`.'),
+      step('Choose from List', 'List **Wallets**. Tap the arrow: Prompt `Wallet or card`.'),
       step('Set Variable', 'Variable Name `Wallet`.'),
-      step('Ask for Input', 'Input Type **Text**. Prompt `Note (optional)`.'),
+      step('Ask for Input', 'Input Type **Text**. Prompt `Note (optional)`. When it runs, you can leave the note empty.'),
       step('Set Variable', 'Variable Name `Note`.'),
       ...id('kp'),
-      step('Dictionary', 'Add these keys (all **Text**):', { keys: [['type', '`entry`'], ['id', '**ID**'], ['amount', '**Amount**'], ['category', '**Category**'], ['wallet', '**Wallet**'], ['note', '**Note**'], at] }),
+      dictionary(KEYS.keypad),
       save,
       step('Show Notification', 'Type `₱`, insert **Amount**, type ` · `, insert **Category**, type ` · `, insert **Wallet**, type ` saved`.', { copy: ' · ' }),
-      post,
+      post(KEYS.keypad),
       ...refresh,
     ],
-    after: ['Settings → **Accessibility** → **Touch** → **Back Tap** → **Double Tap** → choose **Pitaka Keypad**.'],
+    after: ['In the iPhone **Settings** app: **Accessibility** → **Touch** → **Back Tap** → **Double Tap** → under Shortcuts, choose **Pitaka Keypad**.'],
     test: 'Run it, enter `1`, any category and wallet, and the note `test`. A test never becomes an entry.',
   },
   {
     id: 'text', title: 'Quick Add – Text', name: 'Pitaka Text', icon: 'edit', types: ['text'],
     when: 'Triple-tap the back of your iPhone',
     what: 'One box: type it the way you say it, like `jollibee 289 gcash`, `grab 175`, `sahod 25000 bpi` or `lent mel 500`. Pitaka reads it; anything it isn\'t sure about waits in Review.',
-    setup: ['Shortcuts → **+**. Name it `Pitaka Text`.'],
+    setup: [newShortcut('Pitaka Text')],
     steps: [
       step('Ask for Input', 'Input Type **Text**. Prompt `What did you spend?`', { copy: 'What did you spend?' }),
       step('Set Variable', 'Variable Name `Said`.'),
       ...id('qt'),
-      step('Dictionary', 'Add these keys (all **Text**):', { keys: [['type', '`text`'], ['id', '**ID**'], ['text', '**Said**'], at] }),
+      dictionary(KEYS.text),
       save,
       step('Show Notification', 'Type `Sent to Pitaka: `, insert **Said**.'),
-      post,
+      post(KEYS.text),
     ],
-    after: ['Settings → **Accessibility** → **Touch** → **Back Tap** → **Triple Tap** → choose **Pitaka Text**.'],
+    after: ['In the iPhone **Settings** app: **Accessibility** → **Touch** → **Back Tap** → **Triple Tap** → under Shortcuts, choose **Pitaka Text**.'],
     test: 'Run it and type `test`.',
   },
   {
     id: 'balance', title: 'Update Balance', name: 'Pitaka Balance', icon: 'wallet', types: ['balance'],
     when: 'Whenever you look at your GCash or bank app',
     what: 'Type the balance the app shows. If Pitaka disagrees, Review offers a visible balance fix (never a hidden change).',
-    setup: ['Shortcuts → **+**. Name it `Pitaka Balance`. Add it to your Home Screen or to the Shortcuts widget if you like.'],
+    setup: [newShortcut('Pitaka Balance', ' Add it to your Home Screen or to the Shortcuts widget if you like.')],
     steps: [
       ...lists(['wallets']),
-      step('Choose from List', 'List **Wallets**. Prompt `Which wallet?`'),
+      step('Choose from List', 'List **Wallets**. Tap the arrow: Prompt `Which wallet?`'),
       step('Set Variable', 'Variable Name `Wallet`.'),
-      step('Ask for Input', 'Input Type **Number**. Prompt `Balance the app shows ₱`.', { copy: 'Balance the app shows ₱' }),
+      amount('Balance the app shows ₱'),
       step('Set Variable', 'Variable Name `Balance`.'),
       ...id('bal'),
-      step('Dictionary', 'Add these keys (all **Text**):', { keys: [['type', '`balance`'], ['id', '**ID**'], ['wallet', '**Wallet**'], ['amount', '**Balance**'], at] }),
+      dictionary(KEYS.balance),
       save,
       step('Show Notification', 'Type `Balance sent: `, insert **Wallet**, type ` ₱`, insert **Balance**.'),
-      post,
+      post(KEYS.balance),
       ...refresh,
     ],
     after: [],
@@ -122,14 +144,12 @@ export const SHORTCUTS = [
     when: 'When GCash or your bank texts you',
     what: 'Each alert goes to Pitaka. It matches alerts to what you logged (₱289 at Jollibee is one purchase, not two) and adds what you didn\'t log. Formats it can\'t read wait in Review, where you can teach them.',
     setup: [
-      ...automation('**Message** → **Sender**: choose the bank (save its number as a contact first if you need to). Or **Message Contains**: a word every alert from it has.'),
-      `Make one automation for each sender: ${INSTITUTIONS.join(', ')}.`,
+      ...automation('**Message** → **Message Contains**: a word that every alert from that bank has, typed the way the alerts write it (for example `GCash`). Or use **Sender** if the bank texts you from a number saved in your contacts.'),
+      `Make one automation for each bank that texts you: ${INSTITUTIONS.join(', ')}.`,
     ],
     steps: [
       ...id('sms'),
-      step('Dictionary', 'Add these keys (all **Text**). For **sender**, type the bank\'s name exactly as listed above, like `GCash`.', { keys: [['type', '`sms`'], ['id', '**ID**'], ['sender', '`GCash` (the bank this automation is for)'], ['text', '**Shortcut Input** (tap it: **Content**)'], at] }),
-      save,
-      post,
+      ...sends(KEYS.sms, '. For **sender**, type the bank\'s name exactly as listed above, like `GCash`'),
     ],
     after: [],
     test: 'In the automation, tap ▶ (play). It runs without a message, which Pitaka counts as a test.',
@@ -137,13 +157,11 @@ export const SHORTCUTS = [
   {
     id: 'email', title: 'Email alerts', name: 'optional', icon: 'mail', types: ['email'], automation: true, optional: true,
     when: 'When an alert email arrives in Mail',
-    what: 'For banks that email instead of texting. Same matching as SMS. Only the sender, subject and text of alert emails are sent.',
+    what: 'For banks that email instead of texting. Same matching as SMS. Only the sender, subject and text of alert emails are sent. It only sees mail that arrives in Apple\'s Mail app.',
     setup: automation('**Email** → **Sender**: the bank\'s alert address (or **Subject Contains**: a word in every alert subject).'),
     steps: [
       ...id('em'),
-      step('Dictionary', 'Add these keys (all **Text**):', { keys: [['type', '`email`'], ['id', '**ID**'], ['from', '**Shortcut Input** (tap it: **Sender**)'], ['subject', '**Shortcut Input** (tap it: **Subject**)'], ['body', '**Shortcut Input** (tap it: the message text)'], at] }),
-      save,
-      post,
+      ...sends(KEYS.email),
     ],
     after: [],
     test: 'In the automation, tap ▶ (play).',
@@ -151,13 +169,11 @@ export const SHORTCUTS = [
   {
     id: 'wallet', title: 'Apple Wallet', name: 'optional', icon: 'card', types: ['wallet'], automation: true, optional: true,
     when: 'When you tap a card in Apple Wallet',
-    what: 'If your card supports transaction automations, each tap-to-pay is sent the moment it happens. Many Philippine cards don\'t offer this; if the card isn\'t listed, skip it.',
-    setup: automation('**Transaction** → choose your cards → leave the categories as they are.'),
+    what: 'Each tap-to-pay with a card in Apple Wallet is sent the moment it happens. If the automation doesn\'t list any of your cards, skip this. The trigger is known to miss some payments, so keep your SMS or email alerts too.',
+    setup: automation('**Transaction** (it may say **Wallet**) → **When I tap**: choose your cards. Leave the categories and merchants as they are.'),
     steps: [
       ...id('wl'),
-      step('Dictionary', 'Add these keys (all **Text**):', { keys: [['type', '`wallet`'], ['id', '**ID**'], ['merchant', '**Shortcut Input** (tap it: **Merchant**)'], ['amount', '**Shortcut Input** (tap it: **Amount**)'], ['card', '**Shortcut Input** (tap it: **Card or Pass**)'], at] }),
-      save,
-      post,
+      ...sends(KEYS.wallet),
     ],
     after: [],
     test: 'In the automation, tap ▶ (play).',
@@ -166,9 +182,12 @@ export const SHORTCUTS = [
 export const shortcut = (id) => SHORTCUTS.find((s) => s.id === id);
 
 export const BEFORE = [
-  'Set up your relay first (Settings → Inbox relay). Each shortcut needs its address and write token.',
-  'In the Files app, open **iCloud Drive → Shortcuts** and make a folder named `Pitaka`. Your shortcuts keep their lists and a backup copy of everything they send there.',
-  'Names below are the actions as the iOS 26 Shortcuts app shows them: search for them with the search field at the bottom of the shortcut editor.',
+  'Set up your relay first (in Pitaka: Settings → Inbox relay). Each shortcut needs its address and write token.',
+  'In the Files app, open **iCloud Drive → Shortcuts** and make a folder named `Pitaka`. Your shortcuts keep their lists and a backup copy of everything they send there. Their file actions use that **Shortcuts** folder: if one shows a different Folder, tap it and choose iCloud Drive → Shortcuts.',
+  'Names below are the actions as the iOS 26 Shortcuts app shows them. Find each one with the search field at the bottom of the shortcut editor. A new action goes at the end; drag it to move it.',
+  'When you tap a field, the bar above the keyboard has **Select Variable** and items like **Current Date** and **Shortcut Input** (swipe it sideways for more). Tap a variable after inserting it to choose a format or a detail.',
+  '"Tap the arrow" means the arrow on an action that shows its other options (Apple\'s guide calls it **Show More**).',
+  'The first time a shortcut uses your relay or the Pitaka folder, Shortcuts asks for permission: tap **Always Allow**. Run each automation once with ▶ (its Test step) so you get to answer.',
 ];
 
 // Fills the placeholders for one person; missing values become readable stand-ins.
@@ -220,8 +239,9 @@ export function guideMarkdown() {
   }
   out.push('## When something doesn\'t arrive', '',
     '- **No relay, or offline:** everything is still in iCloud Drive/Shortcuts/Pitaka/inbox.jsonl. In Pitaka: Settings → Inbox and alerts → **Import from Files**. Nothing is added twice.',
-    '- **"Couldn\'t connect" in Shortcuts:** check the relay address and token (Settings → Inbox relay → Copy), and that you\'re online.',
-    '- **401 / wrong token:** the write token changed (you made a new one, or paired again). Paste the new one into each Get Contents of URL.',
+    '- **Shortcuts shows an error at Get Contents of URL:** check the relay address and write token (in Pitaka: Settings → Inbox relay → Copy), and that you\'re online. The backup copy was already saved.',
+    '- **The shortcut runs, but Test never shows ✓:** the write token probably changed (you made a new one, or paired again). Paste the new one into each Get Contents of URL.',
+    '- **Choose from List has nothing to choose:** the last fetch of your lists failed, usually because of the write token. Fix the token in both Get Contents of URL actions, then in the Files app delete iCloud Drive → Shortcuts → Pitaka → config.json. The next run uses the lists typed into the shortcut and fetches them again.',
     '- **An alert landed in Review as "Unknown format":** tap **Teach** and mark the amount, merchant and balance. Pitaka reads that format from then on.',
     '');
   return out.filter((line, i, a) => !(line === '' && a[i - 1] === '')).join('\n');

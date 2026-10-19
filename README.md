@@ -14,8 +14,8 @@ never scrapes a bank website or app, and has no AI features.
 - **Quick Add from the back of your iPhone.** Double-tap: amount, category, wallet, done. Triple-tap: type
   it like you'd say it (`jollibee 289 gcash`, `sahod 25000`, `lent mel 500`). Pitaka collects it the moment
   you open it: *1 new entry from Quick Add*, with Undo.
-- **Bank and GCash alerts fill in Pitaka.** SMS and email automations (and Apple Wallet taps, where your
-  card supports them) send alerts to Pitaka. A ₱289 Jollibee you logged and the GCash text about it are
+- **Bank and GCash alerts fill in Pitaka.** SMS and email automations (and Apple Wallet taps, for cards
+  in Apple Wallet) send alerts to Pitaka. A ₱289 Jollibee you logged and the GCash text about it are
   one purchase, not two. Transfers between your own wallets are paired. Balances in alerts are checked.
 - **Review inbox.** Anything Pitaka isn't sure about waits for you: accept, edit, link to an entry, mark as
   a transfer, ignore, or **teach** it an alert format. Everything automatic can be undone.
@@ -46,8 +46,8 @@ never scrapes a bank website or app, and has no AI features.
 4. **Pair it:** Pitaka → Settings → **Inbox relay**.
 5. **Build your shortcuts:** Pitaka → Settings → **Connect your iPhone** fills in your relay address,
    token and lists, with Copy and Test buttons ([docs/SETUP-SHORTCUTS.md](docs/SETUP-SHORTCUTS.md) has
-   the same steps).
-6. **Set up Back Tap:** Settings → Accessibility → Touch → Back Tap → Double Tap: *Pitaka Keypad*,
+   the same steps). You build them by hand in the Shortcuts app; the steps use the iOS 26 names.
+6. **Set up Back Tap:** iPhone Settings → Accessibility → Touch → Back Tap → Double Tap: *Pitaka Keypad*,
    Triple Tap: *Pitaka Text*.
 7. **Set up the automations:** SMS (one per bank), and email or Apple Wallet if you want them.
 
@@ -63,9 +63,13 @@ the relay's tokens and key); after restoring, Pitaka offers to pair the relay ag
 - **Alert formats are unverified.** The built-in readers are educated guesses; Pitaka sends anything it
   isn't sure about to Review, and learns formats you teach it. See [docs/ALERT-FORMATS.md](docs/ALERT-FORMATS.md)
   for how to share redacted samples.
-- **Apple Wallet automations** only work for cards that support them; many Philippine cards don't.
+- **Apple Wallet automations** only work with payment cards in Apple Wallet, and people report that the
+  trigger sometimes misses a payment. Keep your SMS or email alerts on too.
+- **Message and email automations may show a notification** each time they run; iOS doesn't always let
+  you turn that off.
 - **Offline shortcuts** still save to iCloud Drive/Shortcuts/Pitaka/inbox.jsonl; Shortcuts shows an error
-  for the part that couldn't reach the relay. Import the file from Settings → Inbox and alerts.
+  for the part that couldn't reach the relay. Import the file from Settings → Inbox and alerts →
+  **Import from Files**.
 - **GitHub Pages needs a public repository** on the free plan.
 - **Storage**: iOS can clear a web app's data if it's unused for weeks and storage isn't protected; Pitaka
   asks for persistent storage and reminds you to back up.
