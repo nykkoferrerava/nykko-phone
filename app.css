@@ -643,7 +643,14 @@ form[data-type='card'] .when.card-only, form[data-type='person'] .when.person { 
 #toast > .ti { width: 20px; height: 20px; color: var(--accent-inverse); }
 #toast .toast-action { flex: none; display: inline-flex; align-items: center; gap: 6px; min-height: 44px; margin-left: 4px; padding: 0 12px; border-radius: 12px; color: var(--accent-inverse); font-weight: 700; transition: background-color var(--press); }
 #toast .toast-action:active { background: rgb(255 255 255 / 12%); }
-body.sheet-open #toast { bottom: calc(var(--safe-b) + var(--kb, 0px) + 24px); }
+/* Over a sheet the toast sits at the top and the sheet keeps clear of it, so it never covers Save (or a
+   sheet's other buttons) and a tap meant for them can't land on Undo. */
+body.sheet-open #toast { top: calc(var(--safe-t) + 8px); bottom: auto; animation-name: toast-in-top; }
+body.sheet-open.toast-on .sheet-panel {
+  max-height: calc(100vh - var(--safe-t) - var(--toast-h, 58px) - 22px - var(--kb, 0px));
+  max-height: calc(100dvh - var(--safe-t) - var(--toast-h, 58px) - 22px - var(--kb, 0px));
+}
+@keyframes toast-in-top { from { opacity: 0; transform: translate(-50%, -16px) scale(0.96); } }
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%, 16px) scale(0.96); } }
 
 /* ---------- full-screen overlays: onboarding, install, lock ---------- */
@@ -705,7 +712,7 @@ body.privacy::after { content: '₱'; position: fixed; z-index: 46; left: 50%; t
   #main > .view { animation: none; }
   .progress > *, .steps i, .chart path, .dots i, .bar-title, details.pad > summary::after { transition: none; }
   .shake .lock-inner { animation: none; }
-  #toast { animation: toast-fade 0.2s ease-out; }
+  #toast, body.sheet-open #toast { animation: toast-fade 0.2s ease-out; }
   .btn:active:not(:disabled), .icon-btn:active:not(:disabled), .bar-btn:active, .chip-btn:active, .wallet:active,
   button.tile:active, .tile[data-action]:active, .debt:active, .cat-opt:active, .type-grid label:active, .tabbar .fab:active, .day-opt:active { transform: none; }
 }

@@ -68,13 +68,16 @@ export function toast(msg, { action = '', onAction = null, ms = 0, sub = '', war
   toastFn = onAction;
   t.innerHTML = `${ic ? icon(ic) : ''}<span class="t-body"><span>${esc(msg)}</span>${sub ? `<span class="t-sub${warn ? ' warn' : ''}">${esc(sub)}</span>` : ''}</span>${action && onAction ? `<button type="button" class="toast-action">${esc(action)}</button>` : ''}`;
   t.hidden = false;
+  // An open sheet makes room for it (app.css): its height, and that it's showing.
+  document.documentElement.style.setProperty('--toast-h', `${t.offsetHeight}px`);
+  document.body.classList.add('toast-on');
   // restart the entrance animation for back-to-back toasts
   t.style.animation = 'none';
   void t.offsetWidth;
   t.style.animation = '';
   toastTimer = setTimeout(hideToast, ms || (onAction ? 6000 : sub ? 4200 : 2600));
 }
-export function hideToast() { $('#toast').hidden = true; toastFn = null; }
+export function hideToast() { $('#toast').hidden = true; toastFn = null; document.body.classList.remove('toast-on'); }
 export function runToastAction() { const fn = toastFn; hideToast(); if (fn) fn(); }
 
 // ------------------------------------------------------------------ banners (#banner-slot)
