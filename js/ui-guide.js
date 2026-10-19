@@ -5,7 +5,7 @@ import * as Sync from './sync.js';
 import { SHORTCUTS, BEFORE, shortcut, fill } from './guide.js';
 import { esc } from './util.js';
 import { $, icon, openSheet, sheetHead, toast, haptic } from './ui-core.js';
-import { relaySheet, docsLink, copyText, relayMessage } from './ui-connect.js';
+import { relaySheet, docsLink, copyText, relayMessage, guideHooks } from './ui-connect.js';
 
 const values = () => {
   const cfg = S.shortcutConfig();
@@ -80,6 +80,7 @@ export function guideCopy({ s, i, w }) {
   if (needsRelay(tpl) && !Sync.paired()) return toast('Pair your relay first', { sub: 'Settings → Inbox relay' });
   return copyText(fill(tpl, values()), tpl.includes('{TOKEN}') ? 'Copied, with your write token' : 'Copied');
 }
+guideHooks.copy = guideCopy;
 
 // ------------------------------------------------------------------ Test
 // Watches for the shortcut's next item for three minutes while its page is open. The relay stamps when

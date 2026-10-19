@@ -2,7 +2,8 @@
 //
 // - Install precaches the app files fresh from the network (bypassing the HTTP cache).
 // - Every request is served from the cache straight away and refreshed in the background
-//   (stale-while-revalidate), so even a forgotten VERSION bump heals on the next launch.
+//   (stale-while-revalidate), so even a forgotten VERSION bump heals on the next launch. The refresh
+//   waits a moment, so a launch isn't slowed down by it.
 // - A new version waits until the app says it's safe ({type:'SKIP_WAITING'}), so an
 //   update never swaps files under a half-filled form.
 //
@@ -57,6 +58,19 @@ async function clean(res) {
   return new Response(await res.blob(), { status: res.status, statusText: res.statusText, headers: res.headers });
 }
 
+// Same file as the cached copy? The server's ETag says so (GitHub Pages sends one); without it the bytes do.
+async function unchanged(cached, fresh) {
+  const a = cached.headers.get('etag');
+  const b = fresh.headers.get('etag');
+  if (a && b) return a === b;
+  const [x, y] = await Promise.all([cached.arrayBuffer(), fresh.arrayBuffer()]);
+  if (x.byteLength !== y.byteLength) return false;
+  const u = new Uint8Array(x);
+  const v = new Uint8Array(y);
+  for (let i = 0; i < u.length; i++) if (u[i] !== v[i]) return false;
+  return true;
+}
+
 self.addEventListener('install', (e) => {
   e.waitUntil(
     (async () => {
@@ -87,6 +101,21 @@ self.addEventListener('install', (e) => {
   );
 });
 
+// Background refreshes start REFRESH_DELAY after the request, once Pitaka is on screen: started at once,
+// their replies compete with handing out the cached files. When a new version turns up they are dropped:
+// it can only take over once this worker is idle, and it brings fresh copies anyway.
+const REFRESH_DELAY = 2000;
+const delayed = new Set();
+function afterLaunch(refresh) {
+  if (self.registration.installing || self.registration.waiting) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const job = { drop: () => { clearTimeout(timer); delayed.delete(job); resolve(null); } };
+    const timer = setTimeout(() => { delayed.delete(job); resolve(refresh()); }, REFRESH_DELAY);
+    delayed.add(job);
+  });
+}
+self.registration.addEventListener('updatefound', () => { for (const job of [...delayed]) job.drop(); });
+
 self.addEventListener('message', (e) => {
   if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting();
 });
@@ -113,25 +142,32 @@ self.addEventListener('fetch', (e) => {
 
   const cacheP = caches.open(VERSION);
   // Background refresh (no-cache = revalidate with the server, skipping the browser's HTTP cache).
-  const refresh = fetch(key, { cache: 'no-cache', credentials: 'same-origin' })
+  // An unchanged file is left in place: rewriting every file on every launch is wasted work, and the
+  // browser drops the compiled code it keeps next to a cached script when the script is replaced.
+  const refresh = () => fetch(key, { cache: 'no-cache', credentials: 'same-origin' })
     .then(async (res) => {
       if (res.ok && res.type === 'basic') {
-        const copy = await clean(res.clone());
-        await (await cacheP).put(key, copy);
+        const cache = await cacheP;
+        const old = await cache.match(key);
+        if (!old || !(await unchanged(old, res.clone()))) await cache.put(key, await clean(res.clone()));
       }
       return res;
     })
     .catch(() => null);
-  e.waitUntil(refresh);
 
-  e.respondWith(
-    (async () => {
-      const cache = await cacheP;
-      const hit = (await cache.match(key)) || (isPage ? await cache.match('./') : undefined);
-      if (hit) return hit;
-      const res = await refresh;
-      if (res) return isPage && res.redirected ? Response.redirect(res.url, 302) : res;
-      return (isPage && (await caches.match('./'))) || Response.error();
-    })()
-  );
+  let refreshed = null;
+  const respond = (async () => {
+    const cache = await cacheP;
+    const hit = (await cache.match(key)) || (isPage ? await cache.match('./') : undefined);
+    if (hit) {
+      refreshed = afterLaunch(refresh);
+      return hit;
+    }
+    refreshed = refresh();
+    const res = await refreshed;
+    if (res) return isPage && res.redirected ? Response.redirect(res.url, 302) : res;
+    return (isPage && (await caches.match('./'))) || Response.error();
+  })();
+  e.respondWith(respond);
+  e.waitUntil(respond.then(() => refreshed, () => null));
 });

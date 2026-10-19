@@ -11,7 +11,6 @@ import {
   $, ui, pw, icon, openSheet, closeSheet, sheetHead, saveLink, field, select, toast, FormProblem, str, haptic, emptyState, barBtn, header, accounts,
 } from './ui-core.js';
 import { EXTRA_VIEWS, homeButtons, backBtn, txnRow, refresh, render } from './ui-views.js';
-import { txnForm } from './ui-sheets.js';
 import { budgetWarning, budgetWarningText } from './insights.js';
 
 export const review = { selecting: false, selected: new Set(), open: new Set() };
@@ -230,8 +229,9 @@ export function transferSheet(id) {
     <p class="meta pad">${esc(X.describeProposal(p))}. Moving money between your own wallets isn't spending or income.</p>
     <div class="list card">${accounts().filter((a) => a.id !== own).map((a) => `<button type="button" class="row" data-action="reviewTransferTo" data-item="${esc(id)}" data-id="${esc(a.id)}"><span class="icon" aria-hidden="true">${icon('wallet')}</span><span class="grow"><span class="title">${esc(a.name)}</span></span><span class="chev" aria-hidden="true">${icon('right')}</span></button>`).join('')}</div>`);
 }
-// Edit: the entry form, filled in with what Pitaka read; saving settles the item.
-export function editItem(id) {
+// Edit: the entry form, filled in with what Pitaka read; saving settles the item. app.js passes txnForm
+// (the entry form loads after Home).
+export function editItem(id, txnForm) {
   const it = S.inboxItem(id);
   if (!it) return;
   const p = it.parsed || {};
