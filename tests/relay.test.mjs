@@ -212,7 +212,8 @@ describe('relay: sealed items', () => {
     await C.send(relay, { type: 'sms', id: 'sms-1234567', sender: 'GCash', text: 'You have paid P289.00 to JOLLIBEE. Ref 9876543210123' });
     const rows = env.DB.sql.prepare('SELECT box FROM items').all();
     assert.equal(rows.length, 2);
-    for (const r of rows) assert.ok(!/Jollibee|JOLLIBEE|GCash|289|150/.test(r.box), 'no plaintext at rest');
+    // Only text that can't occur by chance in base64url: spaces, dots, quotes.
+    for (const r of rows) for (const plain of ['Jollibee with Mel', 'P289.00', 'Ref 9876543210123', '"amount"', '"sender"', '"GCash"']) assert.ok(!r.box.includes(plain), `no plaintext at rest: ${plain}`);
     const boxes = rows.map((r) => JSON.parse(r.box));
     assert.notEqual(boxes[0].epk, boxes[1].epk);
     assert.equal(boxes[0].alg, 'ECDH-ES+A256GCM');
@@ -242,6 +243,16 @@ describe('relay: collecting and acknowledging', () => {
     assert.equal(await C.ack(relay, first.items.slice(0, 2).map((x) => x.key)), 2);
     assert.deepEqual((await C.collect(relay, key)).items.map((x) => x.item.note), ['n2']);
     assert.equal((await C.status(relay)).pending, 1);
+  });
+  test('items sent in the same millisecond come out in the order they arrived', async () => {
+    const { relay, key } = await paired();
+    const keep = Date.now;
+    const frozen = Date.now();
+    Date.now = () => frozen;
+    try { for (let i = 0; i < 40; i++) await C.send(relay, entry({ note: String(i) })); } finally { Date.now = keep; }
+    const { items } = await C.collect(relay, key);
+    assert.equal(new Set(items.map((x) => x.key.split(':')[1])).size, 1, 'one millisecond');
+    assert.deepEqual(items.map((x) => Number(x.item.note)), [...Array(40).keys()]);
   });
   test('ack ignores anything that is not an item key', async () => {
     const { relay } = await paired();

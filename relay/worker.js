@@ -77,6 +77,10 @@ function sameHash(a, b) {
   return d === 0;
 }
 const rand = (n) => { const a = new Uint8Array(n); crypto.getRandomValues(a); return [...a].map((x) => (x % 36).toString(36)).join(''); };
+// Item keys sort in arrival order: the time, then a counter for items in the same millisecond (in this
+// instance), then randomness so keys made by two instances never collide.
+let seq = 0;
+const itemKey = (now) => { seq = (seq + 1) % 36 ** 4; return `i:${now.toString(36)}:${seq.toString(36).padStart(4, '0')}${rand(8)}`; };
 // Cuts text to `max` UTF-16 units without leaving half of an emoji at the end.
 function cut(s, max) {
   if (s.length <= max) return s;
@@ -359,7 +363,7 @@ async function handle(req, env, c) {
     const [, bounds] = await db.batch([purge(db, now), db.prepare('SELECT (SELECT MIN(rowid) FROM items) AS lo, (SELECT MAX(rowid) FROM items) AS hi')]);
     if (await inboxFull(db, bounds?.results?.[0], now)) return out(507, { error: 'the inbox is full: open Pitaka to collect it' });
     const box = await encryptFor(pair.publicKey, JSON.stringify(v.item));
-    await db.prepare('INSERT INTO items (k, box, exp) VALUES (?, ?, ?)').bind(`i:${now.toString(36)}:${rand(12)}`, JSON.stringify(box), now + ITEM_TTL).run();
+    await db.prepare('INSERT INTO items (k, box, exp) VALUES (?, ?, ?)').bind(itemKey(now), JSON.stringify(box), now + ITEM_TTL).run();
     return out(200, { ok: true, id: v.item.id });
   }
   if (path === '/config' && req.method === 'GET') {
