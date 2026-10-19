@@ -50,20 +50,44 @@ export function cleanRaw(x, now = Date.now()) {
   return { cid, type: x.type, at: Math.trunc(t), receivedAt: Number.isFinite(receivedAt) && receivedAt > 0 ? Math.trunc(receivedAt) : Math.trunc(now), raw };
 }
 
-// iCloud Drive/Shortcuts/Pitaka/inbox.jsonl: one JSON object per line (a JSON array also works).
+// Where the object starting at s[start] ('{') ends (the index after its '}'), or -1. Braces in strings don't count.
+function objectEnd(s, start) {
+  let depth = 0, inStr = false;
+  for (let j = start; j < s.length; j++) {
+    const ch = s[j];
+    if (inStr) { if (ch === '\\') j++; else if (ch === '"') inStr = false; }
+    else if (ch === '"') inStr = true;
+    else if (ch === '{' || ch === '[') depth++;
+    else if ((ch === '}' || ch === ']') && --depth === 0) return j + 1;
+  }
+  return -1;
+}
+
+// iCloud Drive/Shortcuts/Pitaka/inbox.jsonl: one JSON object per line (a JSON array also works). A line
+// that doesn't parse may start an object written over several lines (pretty-printed): it is read up to its
+// closing brace. If that doesn't parse either, only that one line counts as bad.
 export function parseJsonl(text) {
   const items = [];
   let bad = 0;
+  const add = (x) => { const c = cleanRaw(x); if (c) items.push(c); else bad++; };
   const src = String(text || '').replace(/^﻿/, '').trim();
   if (src.startsWith('[')) {
-    try { for (const x of JSON.parse(src)) { const c = cleanRaw(x); if (c) items.push(c); else bad++; } return { items, bad }; } catch { /* fall back to lines */ }
+    try { for (const x of JSON.parse(src)) add(x); return { items, bad }; } catch { items.length = 0; bad = 0; /* fall back to lines */ }
   }
-  for (const line of src.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    let x;
-    try { x = JSON.parse(line); } catch { bad++; continue; }
-    const c = cleanRaw(x);
-    if (c) items.push(c); else bad++;
+  for (let i = 0; i < src.length;) {
+    const nl = src.indexOf('\n', i) < 0 ? src.length : src.indexOf('\n', i);
+    const line = src.slice(i, nl).trim();
+    let next = nl + 1;
+    if (line) {
+      let x, ok = false;
+      try { x = JSON.parse(line); ok = true; } catch { /* maybe several lines */ }
+      if (!ok && line.startsWith('{')) {
+        const start = src.indexOf('{', i), end = objectEnd(src, start);
+        if (end > 0) try { x = JSON.parse(src.slice(start, end)); ok = true; next = end; } catch { /* not an object after all */ }
+      }
+      if (ok) add(x); else bad++;
+    }
+    i = next;
   }
   return { items, bad };
 }

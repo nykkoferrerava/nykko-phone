@@ -39,6 +39,25 @@ describe('inbox: checking what arrives', () => {
     const { items, bad } = X.parseJsonl('{"id":"line000001","type":"text","text":"150 lunch"}\nnot json\n\n{"id":"line000002","type":"entry","amount":99,"category":"Food","wallet":"Cash"}\n{"type":"weird"}');
     assert.deepEqual([items.length, bad], [2, 2]);
   });
+  test('Files catch-up: objects written over several lines (pretty-printed) are read too', () => {
+    const pretty = (o) => JSON.stringify(o, null, 2);
+    const text = [
+      pretty({ id: 'line000011', type: 'text', text: '150 lunch {gcash}', at: '2026-10-13T12:00:00+08:00' }),
+      '{"id":"line000012","type":"entry","amount":99,"category":"Food","wallet":"Cash"}',
+      'garbage here',
+      pretty({ id: 'line000013', type: 'sms', sender: 'GCash', text: 'He said "hi" \\ } {' }),
+    ].join('\n');
+    for (const t of [text, text.replace(/\n/g, '\r\n')]) {
+      const { items, bad } = X.parseJsonl(t);
+      assert.deepEqual([items.map((x) => x.cid), bad], [['line000011', 'line000012', 'line000013'], 1]);
+      assert.equal(items[2].raw.text, 'He said "hi" \\ } {', 'braces and escapes inside text are text');
+    }
+    // An object that never closes is one bad line; the lines after it are still read.
+    const cut = X.parseJsonl('{\n  "id": "line000014",\n{"id":"line000015","type":"text","text":"99 load"}');
+    assert.deepEqual(cut.items.map((x) => x.cid), ['line000015']);
+    assert.ok(cut.bad >= 1);
+    assert.deepEqual(X.parseJsonl(`[${pretty({ id: 'line000016', type: 'text', text: 'x' })}]`).items.map((x) => x.cid), ['line000016'], 'a JSON array still works');
+  });
 });
 
 describe('inbox: Quick Add – Keypad', () => {
