@@ -451,6 +451,14 @@ export function reconcile(accountId, check) {
   });
   return fix;
 }
+// Which wallet a statement is for, from its file name and title ("GCash Transaction History"; the rows
+// below name other wallets in transfers),
+// when exactly one of your wallets is named there. Returns an account id or null.
+export function guessWallet(name, text) {
+  const m = matchWallet(`${name || ''} ${String(text || '').slice(0, 160)}`.replace(/[_.-]+/g, ' '), { accounts: S.db.accounts });
+  return !m.conflict && m.accountId ? m.accountId : null;
+}
+export const pdfText = (pages) => pages.flat().slice(0, 300).map((i) => i.str).join(' ');
 export const lastStatementCheck = (accountId) => { const c = S.account(accountId)?.checked; return c && c.via === 'statement' ? c : null; };
 // A wallet is due for its monthly check when it has entries and wasn't checked against a statement in
 // the last 35 days.

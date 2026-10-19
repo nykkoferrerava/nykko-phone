@@ -205,6 +205,15 @@ describe('statements: matching and importing', () => {
   });
 });
 
+describe('statements: which wallet', () => {
+  test('a statement names its wallet in the file name or its first lines', () => {
+    const { gcash, gotyme } = setup();
+    assert.equal(T.guessWallet('statement.pdf', T.pdfText(gcashPages)), gcash.id, '"GCash Transaction History"');
+    assert.equal(T.guessWallet('GoTyme_Statement_Oct2026.csv', 'Date,Amount'), gotyme.id);
+    assert.equal(T.guessWallet('export.csv', 'Date,Description,Amount'), null);
+  });
+});
+
 describe('statements: the monthly check', () => {
   test('compares the closing balance with Pitaka on that day and fixes the difference on request', () => {
     const { gcash } = setup();

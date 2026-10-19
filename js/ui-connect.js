@@ -230,6 +230,7 @@ export const CONNECT_FORMS = {
     haptic();
     relaySheet(ui.relayFrom);
     toast('Paired with your relay', { icon: 'check-circle', sub: p.pending ? `${p.pending} item${p.pending === 1 ? ' was' : 's were'} waiting` : 'Now copy the write token into your shortcuts.' });
-    syncNow({ manual: false });
+    await syncNow({ manual: false });
+    if ($('#relay-status')) relaySheet(ui.relayFrom); // shows the first collection
   },
 };

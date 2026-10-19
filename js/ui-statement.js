@@ -7,7 +7,7 @@ import { esc, peso, fmtDate, toISO } from './util.js';
 import { $, icon, openSheet, closeSheet, sheetHead, field, select, toast, FormProblem, haptic, accounts, emptyState } from './ui-core.js';
 import { refresh } from './ui-views.js';
 
-const st = { target: '', name: '', bytes: null, text: '', table: null, roles: [], order: 'auto', positive: 'auto', built: null, rows: [], off: new Set(), check: null };
+const st = { target: '', chosen: false, name: '', bytes: null, text: '', table: null, roles: [], order: 'auto', positive: 'auto', built: null, rows: [], off: new Set(), check: null };
 const MAX_FILE = 15 * 1024 * 1024;
 const SHOW = 400;
 
@@ -20,6 +20,7 @@ const isCard = () => st.target.startsWith('c:');
 export function statementSheet({ id = '', card = '' } = {}) {
   const def = card ? `c:${card}` : `a:${id || S.defaultAccountId() || accounts()[0]?.id || ''}`;
   st.target = st.target && !id && !card ? st.target : def;
+  st.chosen = !!(id || card); // opened from a wallet or card: that's the one
   const groups = [{ group: 'Wallets', options: accounts().map((a) => [`a:${a.id}`, a.name]) }];
   if (cards().length) groups.push({ group: 'Credit cards', options: cards().map((c) => [`c:${c.id}`, c.name]) });
   openSheet(`${sheetHead('Import a statement')}
@@ -60,6 +61,7 @@ async function openStatement(file) {
     return readPdf('');
   }
   st.text = new TextDecoder().decode(bytes);
+  guessTarget(st.text);
   return useTable(T.tableFromCsv(st.text));
 }
 
@@ -72,6 +74,7 @@ async function readPdf(password) {
     return failSheet(e.message || "Pitaka couldn't read this PDF");
   }
   st.bytes = null; // not needed any more
+  guessTarget(T.pdfText(pages));
   return useTable(T.tableFromPdf(pages));
 }
 
@@ -85,6 +88,13 @@ function passwordSheet(wrong) {
       <button class="btn primary block" type="submit">${icon('lock')}Open</button>
     </form>`);
   setTimeout(() => $('#stmt-pw [name=pw]')?.focus(), 350);
+}
+
+// "GCash Transaction History" goes to your GCash wallet unless you picked one.
+function guessTarget(text) {
+  if (st.chosen) return;
+  const id = T.guessWallet(st.name, text);
+  if (id) st.target = `a:${id}`;
 }
 
 function failSheet(msg) {
@@ -178,7 +188,7 @@ export function onStatementChange(el) {
     if (el.value !== 'skip') st.roles = st.roles.map((r, k) => (k !== i && r === el.value ? 'skip' : r));
     st.roles[i] = el.value;
   } else if (el.dataset.stmtOpt) st[el.dataset.stmtOpt] = el.value;
-  else if (el.hasAttribute('data-stmt-target')) { st.target = el.value; return; }
+  else if (el.hasAttribute('data-stmt-target')) { st.target = el.value; st.chosen = true; return; }
   else return;
   st.off = new Set();
   compute();
