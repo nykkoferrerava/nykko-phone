@@ -42,14 +42,16 @@ export const WALLET_ALIASES = [
 ];
 const CARD_WORDS = ['card', 'credit card', 'cc', 'credit'];
 
-const words = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9&+.'-]+/g, ' ').trim();
+// Dots, apostrophes and hyphens count only inside a word ("coins.ph", "7-eleven"), not at its edges ("gcash.").
+const words = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9&+.'-]+/g, ' ').replace(/(^|\s)[.'-]+|[.'-]+(?=\s|$)/g, '$1').trim();
 const hasPhrase = (text, phrase) => ` ${words(text)} `.includes(` ${words(phrase)} `);
 export const titleCase = (s) => String(s || '').replace(/\b([a-z])/g, (c) => c.toUpperCase());
 
 // ---------------------------------------------------------------- amounts
 // ₱1,200 · 1,200.50 · 1.2k · 2k · php 500 · p500 · 500php · 500 pesos. Phone numbers, long references,
-// dates and words with digits (7-eleven, 13th) are not amounts.
-const AMOUNT_RE = /(?<![\w./-])(?:(₱|php|p)\s?)?(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)(\s?k)?(?:\s?(php|pesos?|peso))?(?![\w/-]|\.\d)/gi;
+// dates and words with digits (7-eleven, 13th) are not amounts. Nor is a part of a mistyped number
+// ("12,00", "1,2k"): a digit and a comma right before it, or a comma and a digit right after it.
+const AMOUNT_RE = /(?<![\w./-]|\d,)(?:(₱|php|p)\s?)?(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)(\s?k)?(?:\s?(php|pesos?|peso))?(?![\w/-]|[.,]\d)/gi;
 export function findAmounts(text) {
   const out = [];
   for (const m of String(text || '').matchAll(AMOUNT_RE)) {
