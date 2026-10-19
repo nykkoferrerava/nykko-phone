@@ -1,17 +1,17 @@
 // Formatting, dates and small helpers. All dates are local 'YYYY-MM-DD' strings.
 
-const pesoFmt = new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP' });
-const pesoFmt0 = new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP', maximumFractionDigits: 0 });
-
 const MINUS = '\u2212'; // real minus sign, easier to read than a hyphen
 
+// Same text as Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP' }) (tests compare them),
+// without starting Intl on the way to the first render.
+const group = (n) => String(n).replace(/\B(?=(\d{3})+$)/g, ',');
 export function peso(n, { whole = false } = {}) {
   const v = Number(n);
   const cents = Number.isFinite(v) ? Math.round(v * 100) : 0;
   if (cents === 0) return '₱0';
-  const abs = Math.abs(cents) / 100;
+  const abs = Math.abs(cents);
   // Drop the centavos when they're zero so lists stay readable.
-  const s = whole || cents % 100 === 0 ? pesoFmt0.format(abs) : pesoFmt.format(abs);
+  const s = whole || abs % 100 === 0 ? `₱${group(Math.round(abs / 100))}` : `₱${group(Math.floor(abs / 100))}.${String(abs % 100).padStart(2, '0')}`;
   return cents < 0 ? MINUS + s : s;
 }
 
