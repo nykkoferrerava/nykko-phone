@@ -152,6 +152,49 @@ describe('storage: every change is all-or-nothing', () => {
     restore();
     assert.equal(JSON.stringify(S.db), before);
   });
+  test('erase while an earlier save is still writing: if the erase fails, memory equals the disk', async () => {
+    fresh(); const c = card(); await S.flush();
+    const g = gated(store); S.useAdapter(g);
+    const t = spend(150, { cardId: c.id });
+    const w1 = await g.next(); // the entry is on its way to the disk
+    S.resetAll();
+    const pending = S.flush();
+    w1.pass();
+    const w2 = await g.next();
+    assert.equal(w2.ops.replace, true, 'the erase');
+    w2.fail('SecurityError');
+    await assert.rejects(pending, (e) => e instanceof S.StoreError);
+    S.useAdapter(store);
+    assert.ok(S.txn(t.id), 'the saved entry is back in memory, as it is on disk');
+    assert.equal(S.debt(c.id).balance, 10150);
+    assert.equal(stable(memory()), stable(disk()));
+    // The same when the entry was edited again after its save started.
+    S.useAdapter(g);
+    S.saveTxn({ id: t.id, kind: 'expense', amount: 200, date: '2026-10-13', cardId: c.id });
+    const w3 = await g.next();
+    S.saveTxn({ id: t.id, kind: 'expense', amount: 300, date: '2026-10-13', cardId: c.id }); // not written yet
+    S.resetAll();
+    const again = S.flush();
+    w3.pass();
+    (await g.next()).fail('SecurityError');
+    await assert.rejects(again);
+    S.useAdapter(store);
+    assert.equal(S.txn(t.id).amount, 200, 'what the disk holds');
+    assert.equal(S.debt(c.id).balance, 10200);
+    assert.equal(stable(memory()), stable(disk()));
+    // Two erases in a row: the first reaches the disk, the second fails.
+    S.useAdapter(g);
+    S.resetAll();
+    const first = await g.next();
+    S.resetAll();
+    const both = S.flush();
+    first.pass();
+    (await g.next()).fail('SecurityError');
+    await assert.rejects(both);
+    S.useAdapter(store);
+    assert.equal(S.db.txns.length, 0, 'the first erase is on disk, so nothing comes back');
+    assert.equal(stable(memory()), stable(disk()));
+  });
   test('property: random changes and random failures, memory always equals the disk afterwards', async () => {
     let seed = 1234; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
     const pick = (arr) => arr[Math.floor(rnd() * arr.length)];
