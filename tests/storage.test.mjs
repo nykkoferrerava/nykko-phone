@@ -301,6 +301,39 @@ describe('storage: v2 -> v3 migration', () => {
     assert.equal(S.db.txns.length, 11);
     S.useAdapter(store);
   });
+  test('IndexedDB that cannot be opened AFTER the move never opens the old v2 copy in its place', async () => {
+    const broken = { ...store, read: async () => { throw Object.assign(new Error('nope'), { name: 'UnknownError' }); } };
+    await v2Phone(V2_RAW);
+    await S.load(); // the move: v2's key is kept until a later launch checks the copy
+    spend(42); await S.flush(); // only in IndexedDB
+    const S6 = await import(`${APP}/js/store.js?launch=6`);
+    S6.useAdapter(broken);
+    assert.deepEqual(await quiet(() => S6.load()), { ok: false, reason: 'blocked' }, 'not the stale v2 data, which a later launch would delete');
+    S6.saveTxn({ kind: 'income', amount: 1, date: '2026-10-13' });
+    await assert.rejects(S6.flush(), (e) => e instanceof S6.StoreError);
+    assert.equal(localStorage.getItem('pitaka.data'), V2_RAW, "v2's key is untouched");
+    const S7 = await import(`${APP}/js/store.js?launch=7`);
+    assert.equal((await S7.load()).verified, true);
+    assert.equal(S7.db.txns.length, 12, 'nothing was lost');
+    // Once v2's key is gone, a failed open must not start an empty Pitaka either.
+    const S8 = await import(`${APP}/js/store.js?launch=8`);
+    S8.useAdapter(broken);
+    assert.deepEqual(await quiet(() => S8.load()), { ok: false, reason: 'blocked' });
+    await S.load();
+  });
+  test('on v2\'s key, entries given an id on load are written back, so editing one never drops another', async () => {
+    const txns = [100, 200, 300].map((amount, i) => ({ kind: 'expense', amount, date: `2026-10-0${i + 2}`, accountId: 'cash1' })); // saved by v2 without ids
+    await v2Phone(JSON.stringify({ version: 2, settings: {}, accounts: [{ id: 'cash1', name: 'Cash', kind: 'cash', opening: 1000, openingDate: '2026-10-01' }], txns }));
+    S.useAdapter({ ...store, read: async () => { throw Object.assign(new Error('nope'), { name: 'UnknownError' }); } });
+    assert.equal((await quiet(() => S.load())).fallback, true);
+    S.saveTxn({ id: S.db.txns[0].id, kind: 'expense', amount: 150, date: '2026-10-02', accountId: 'cash1' });
+    await S.flush();
+    const saved = JSON.parse(localStorage.getItem('pitaka.data'));
+    assert.deepEqual(saved.txns.map((t) => t.amount), [150, 200, 300]);
+    assert.deepEqual(saved.txns.map((t) => t.id), S.db.txns.map((t) => t.id));
+    assert.equal(S.accountBalance('cash1'), 350);
+    S.useAdapter(store);
+  });
   test('data that vanished after a finished migration is reported, not silently replaced', async () => {
     await v2Phone();
     localStorage.setItem('pitaka.migrated', '2026-10-01T00:00:00.000Z');

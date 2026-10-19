@@ -612,7 +612,9 @@ export async function load() {
     snapIn = await adapter.read();
   } catch (e) {
     console.error('Storage could not be opened', e);
-    if (!canUseLocalStorage()) {
+    // After the move to IndexedDB, v2's key is out of date (or gone). Opening it instead would show old or
+    // no data, and what was entered then would be lost when IndexedDB opens again: save nothing this time.
+    if (!canUseLocalStorage() || lsGet(MIGRATED_KEY)) {
       adapter = blockedAdapter();
       install(blank(), null, { schema: VERSION });
       return { ok: false, reason: 'blocked' };
@@ -702,6 +704,9 @@ async function loadLegacyMode() {
   }
   const data = sanitize(legacy.data);
   install(data, indexOrder(data), isObj(legacy.data._meta) ? legacy.data._meta : { schema: VERSION });
+  // v2's key keeps entries by id: ones that got an id just now are written back, or the next save would
+  // merge every entry that had none into one.
+  if (BIG.some((k) => !sameIds(list(legacy.data[k]), data[k]))) save();
   return { ok: true };
 }
 
