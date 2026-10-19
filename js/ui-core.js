@@ -290,6 +290,8 @@ export function showFormError(form, err) {
   const input = name && form.querySelector(`[name="${CSS.escape(name)}"]`);
   if (input && input.type !== 'hidden') {
     input.setAttribute('aria-invalid', 'true');
+    const fold = input.closest('details'); // a field tucked away under "More": show it
+    if (fold && !fold.open) fold.open = true;
     input.focus({ preventScroll: true });
   }
   box.scrollIntoView({ block: 'nearest' });
