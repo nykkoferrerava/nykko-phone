@@ -6,7 +6,8 @@
 // on 127.0.0.1:8796; the page reaches it as https://pitaka-relay.test.workers.dev, because the CSP only
 // allows *.workers.dev. Needs Playwright with a Chromium (CHROMIUM=/path/to/chromium if Playwright has
 // none) and wrangler (WRANGLER=/path/to/wrangler, or on PATH). E2E_PORT / E2E_RELAY_PORT change the
-// ports; screenshots, downloads and report.json go to E2E_OUT (default: <tmp>/pitaka-e2e).
+// ports; screenshots, downloads and report.json go to E2E_OUT (default: <tmp>/pitaka-e2e). E2E_TRACE=1
+// logs taps that had to wait.
 //
 // Taps, typing, the file chooser and downloads are a person's. The window.pitaka hook (localhost only)
 // is used to read state for checks, never to change it. Two things are simulated: going to the
@@ -62,7 +63,7 @@ function findWrangler() {
 const relayDir = mkdtempSync(path.join(tmpdir(), 'pitaka-e2e-relay-'));
 let relayProc = null;
 let relayLog = '';
-async function startRelay() {
+async function startRelay(attempt = 1) {
   const bin = findWrangler();
   if (!bin) return 'wrangler not found: set WRANGLER=/path/to/node_modules/.bin/wrangler';
   const toml = readFileSync(path.join(root, 'relay/wrangler.toml'), 'utf8').replace(/^main = .*$/m, `main = ${JSON.stringify(path.join(root, 'relay/worker.js'))}`);
@@ -74,13 +75,19 @@ async function startRelay() {
   relayProc.stdout.on('data', (d) => { relayLog += d; });
   relayProc.stderr.on('data', (d) => { relayLog += d; });
   for (let i = 0; i < 120; i++) {
-    if (relayProc.exitCode !== null) return `wrangler dev exited (${relayProc.exitCode}): ${relayLog.slice(-600)}`;
+    if (relayProc.exitCode !== null) {
+      writeFileSync(path.join(OUT, `relay-${attempt}.log`), relayLog);
+      // workerd now and then dies while starting up; one more try with a fresh state folder.
+      if (attempt < 2) { relayLog = ''; rmSync(path.join(relayDir, 'state'), { recursive: true, force: true }); return startRelay(attempt + 1); }
+      return `wrangler dev exited (${relayProc.exitCode}); its log is in ${path.join(OUT, `relay-${attempt}.log`)}`;
+    }
     try { const r = await fetch(`${RELAY}/`); if ((await r.json()).service === 'pitaka-relay') return null; } catch { /* not up yet */ }
     await new Promise((r) => setTimeout(r, 500));
   }
   return `wrangler dev didn't answer on ${RELAY} within a minute: ${relayLog.slice(-600)}`;
 }
 function stopRelay() {
+  if (relayLog) writeFileSync(path.join(OUT, 'relay.log'), relayLog);
   if (!relayProc || relayProc.exitCode !== null) return;
   try { process.kill(-relayProc.pid, 'SIGTERM'); } catch { try { relayProc.kill('SIGTERM'); } catch { /* gone */ } }
 }
@@ -197,7 +204,13 @@ async function phone({ standalone = true, scheme = 'light' } = {}) {
 }
 const ready = () => page.waitForFunction(() => !!window.pitaka, null, { timeout: 15000 });
 const state = (fn, arg) => page.evaluate(fn, arg);
-const tap = (sel, opts) => page.locator(sel).first().tap(opts);
+// E2E_TRACE=1 logs taps that had to wait (Playwright waits while something covers the target).
+const TRACE = !!process.env.E2E_TRACE;
+async function tap(sel, opts) {
+  const t0 = Date.now();
+  await page.locator(sel).first().tap(opts);
+  if (TRACE && Date.now() - t0 > 1000) console.log(`        slow tap ${Date.now() - t0} ms: ${sel} (toast: ${await page.evaluate(() => { const t = document.querySelector('#toast'); return t.hidden ? 'hidden' : t.innerText.replace(/\s+/g, ' '); })})`);
+}
 const sleep = (ms) => page.waitForTimeout(ms);
 const text = (sel) => page.locator(sel).first().innerText().then((s) => s.replace(/\s+/g, ' ').trim());
 
@@ -1168,12 +1181,13 @@ try {
   });
 
   // ---------------------------------------------------------------- statement import
-  const pickStatement = async () => {
+  const pickStatement = async (file = path.join(FIX, 'statement-gcash.pdf'), wallet = '') => {
     await settings();
     await tap('#sheet [data-action="statementSheet"]');
     await sheet('Import a statement');
+    if (wallet) await pick('#stmt-pick [name=target]', wallet);
     const [fc] = await Promise.all([page.waitForEvent('filechooser'), tap('#sheet [data-action="stmtFile"]')]);
-    await fc.setFiles(path.join(FIX, 'statement-gcash.pdf'));
+    await fc.setFiles(file);
   };
   await step('Statement · locked GCash PDF: wrong, then right password', async () => {
     await pickStatement();
@@ -1192,16 +1206,18 @@ try {
     ok(rows.includes('transfer'), 'the transfer to GoTyme is recognised', rows);
     S.stmtRows = rows;
   }, { id: 'stmt' });
-  await step('Statement · import, balance check, Undo', async () => {
+  await step('Statement · import, then Undo (no balance check before the wallet was added)', async () => {
     const before = await state(() => window.pitaka.S.db.txns.length);
     const n = S.stmtRows.filter((r) => r === 'new' || r === 'transfer').length;
     eq(await text('#sheet [data-action="stmtImport"]'), `Import ${n} entries`, 'import button');
     const m0 = await toastMark();
     await tap('#sheet [data-action="stmtImport"]');
     await toast(m0, `${n} entries imported`);
-    await sheet('Statement balance');
-    has(await text('#sheet'), 'Statement, end of', 'balance check');
-    has(await text('#sheet'), 'Pitaka, same day', 'balance check');
+    // The statement ends Oct 12, 2026; this GCash wallet started today with its balance at the time, so
+    // there is nothing to compare (js/statements.js closingCheck).
+    await sleep(500);
+    const shown = await state(() => (document.querySelector('#sheet').hidden ? '(closed)' : document.querySelector('#sheet-title')?.textContent));
+    eq(shown, '(closed)', 'sheet after importing a statement that ends before the wallet started');
     eq(await state(() => window.pitaka.S.db.txns.length), before + n, 'entries after import');
     const m1 = await toastMark();
     await tap('#toast .toast-action');
@@ -1238,6 +1254,34 @@ try {
       return out.join('\n');
     });
     ok(!dump.includes('pitaka1234'), 'the statement password is stored nowhere', 'found in storage');
+    await closeSheet();
+  }, { needs: ['stmt'] });
+
+  await step('Statement · a CSV up to today: balance check, then a balance fix', async () => {
+    const t = await state(() => { const S = window.pitaka.S; return { day: window.pitaka.toISO(new Date()), gcash: S.accountBalance(S.db.accounts.find((a) => a.name === 'GCash').id) }; });
+    const closing = t.gcash - 120 - 50; // the ₱120 row is new; ₱50 more left GCash than Pitaka knows about
+    const csv = path.join(OUT, 'statement-gcash-today.csv');
+    const money = (n) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    writeFileSync(csv, `Date,Description,Withdrawal,Deposit,Balance\r\n${t.day},"SM STORE, BGC",120.00,,"${money(closing)}"\r\n`);
+    await pickStatement(csv, 'GCash');
+    await sheet('Check the rows');
+    eq(await state(() => [...document.querySelectorAll('#sheet .stmt-row')].map((r) => r.className.replace('row stmt-row ', ''))), ['new'], 'rows');
+    const m0 = await toastMark();
+    await tap('#sheet [data-action="stmtImport"]');
+    await toast(m0, '1 entry imported');
+    await sheet('Statement balance');
+    const body = await text('#sheet');
+    has(body, `Statement, end of`, 'balance check');
+    has(body, `${closing < 0 ? '−' : ''}₱${money(Math.abs(closing)).replace(/\.00$/, '')}`, 'statement balance');
+    has(body, 'Difference −₱50', 'difference');
+    const m1 = await toastMark();
+    await tap('#sheet [data-action="stmtReconcile"]');
+    await toast(m1, 'Balance fixed to match the statement');
+    eq(await bal('GCash'), closing, 'GCash after the fix');
+    await tab('home');
+    await page.locator('#main .wallets .wallet', { hasText: 'GCash' }).tap();
+    await sheet('GCash');
+    has(await text('#sheet'), 'Checked against a statement for', 'wallet sheet');
     await closeSheet();
   }, { needs: ['stmt'] });
 
@@ -1291,10 +1335,12 @@ try {
     eq(b.app, 'pitaka', 'app');
     eq(b.txns.length, await state(() => window.pitaka.S.db.txns.length), 'entries in the backup');
     for (const k of ['pinHash', 'pinSalt', 'pinFails', 'pinLockUntil']) ok(!(k in b.settings), `no ${k} in the backup`, b.settings[k]);
-    ok(sec.read && sec.write, 'the relay tokens exist on the phone', sec);
-    ok(!f.text.includes(sec.read) && !f.text.includes(sec.write), 'no relay token in the backup', 'found');
+    if (!failed.has('pair')) {
+      ok(sec.read && sec.write, 'the relay tokens exist on the phone', sec);
+      ok(!f.text.includes(sec.read) && !f.text.includes(sec.write), 'no relay token in the backup', 'found');
+      eq(b.settings.relayUrl, `https://${RELAY_HOST}`, 'relay address (to offer pairing again)');
+    }
     ok(!/"d"\s*:|relayKey|privateKey/.test(f.text), 'no private key in the backup', 'found');
-    eq(b.settings.relayUrl, `https://${RELAY_HOST}`, 'relay address (to offer pairing again)');
     S.backup = f.file;
     S.backupCount = b.txns.length;
     await closeSheet();
@@ -1415,7 +1461,7 @@ try {
     await sheet('Backup restored');
     const s = await state(() => ({ txns: window.pitaka.S.db.txns.length, pin: !!window.pitaka.S.db.settings.pinHash, onboarded: window.pitaka.S.db.settings.onboarded, lock: !document.querySelector('#lock').hidden, onboard: !document.querySelector('#onboard').hidden }));
     eq(s, { txns: S.backupCount, pin: false, onboarded: true, lock: false, onboard: false }, 'after restoring');
-    has(await text('#sheet'), 'This backup was paired with your relay.', 're-pair offer');
+    if (!failed.has('pair')) has(await text('#sheet'), 'This backup was paired with your relay.', 're-pair offer');
   }, { id: 'restore', needs: ['backup'] });
   await step('Restore · pair again keeping the shortcuts\' write token', async () => {
     await tap('#sheet [data-action="relaySheet"][data-from="restored"]');
