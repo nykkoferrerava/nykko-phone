@@ -147,7 +147,7 @@ async function step(name, fn, { id = '', needs = [], allow = [] } = {}) {
     shot = path.join(OUT, `fail-${String(stepNo).padStart(2, '0')}-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 60)}.png`);
     await page.screenshot({ path: shot }).catch(() => { shot = ''; });
   }
-  const r = { n: stepNo, name, status: 'FAIL', ms, error: err.message.split('\n')[0].slice(0, 600), expected: err.expected, actual: err.actual, shot, console: errs };
+  const r = { n: stepNo, name, status: 'FAIL', ms, error: err.message.split('\n')[0].slice(0, 600), detail: err.message.slice(0, 3000), stack: String(err.stack || '').split('\n').filter((l) => l.includes('e2e.mjs')).slice(0, 3).join(' | '), expected: err.expected, actual: err.actual, shot, console: errs };
   results.push(r);
   console.log(`FAIL  ${String(stepNo).padStart(2)} ${name}\n        ${r.error}${shot ? `\n        screenshot: ${shot}` : ''}${errs.length ? `\n        console: ${errs.join(' | ').slice(0, 400)}` : ''}`);
 }
@@ -231,7 +231,9 @@ async function sheet(title) {
 }
 const sheetGone = () => until(() => document.querySelector('#sheet').hidden, null, 'sheet', 'closed', () => document.querySelector('#sheet-title')?.textContent.trim(), 4000);
 async function closeSheet() {
-  if (await state(() => document.querySelector('#sheet').hidden)) return;
+  const st = await state(() => { const s = document.querySelector('#sheet'); return s.hidden ? 'hidden' : s.classList.contains('open') ? 'open' : 'closing'; });
+  if (st === 'hidden') return;
+  if (st === 'closing') return sheetGone(); // the app is already sliding it away
   const close = page.locator('#sheet .sheet-head [data-action="closeSheet"]');
   if (await close.count()) await close.first().tap();
   else await page.locator('#sheet .sheet-backdrop').tap({ position: { x: 30, y: 20 } }).catch(() => page.keyboard.press('Escape'));
